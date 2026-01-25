@@ -1,0 +1,69 @@
+# PaddleOCR Configuration for Receipt Processing
+
+ocr:
+  # GPU Settings
+  use_gpu: false
+  gpu_mem: 2000  # MB of GPU memory to use
+  
+  # OCR Parameters
+  use_angle_cls: true  # Detect and correct text orientation
+  lang: 'en'  # Language (supports multi-language)
+  det_db_thresh: 0.3  # Text detection threshold (lower = more sensitive)
+  det_db_box_thresh: 0.5  # Box detection threshold
+  rec_batch_num: 6  # Batch size for recognition
+  
+  # Quality Settings
+  max_batch_size: 10
+  use_space_char: true  # Recognize spaces between words
+  drop_score: 0.5  # Minimum confidence score to keep results
+  
+  # Performance
+  enable_mkldnn: true  # Optimize for CPU if GPU unavailable
+  use_tensorrt: false  # TensorRT optimization (advanced)
+  
+preprocessing:
+  # Image Enhancement
+  auto_rotate: true
+  denoise: true
+  enhance_contrast: true
+  
+  # Size Constraints
+  max_image_size: 4096  # Max width/height in pixels
+  min_image_size: 100   # Min width/height in pixels
+  
+  # Supported Formats
+  allowed_extensions:
+    - .jpg
+    - .jpeg
+    - .png
+    - .webp
+    - .bmp
+  
+stitching:
+  # Long Receipt Handling
+  enabled: true
+  max_parts: 10  # Maximum number of images to stitch
+  overlap_threshold: 0.15  # Minimum overlap ratio (15%)
+  min_match_points: 10  # Minimum feature matches required
+  
+  # Stitching Mode
+  mode: 'vertical'  # 'vertical' or 'horizontal'
+  blend_strength: 5  # Edge blending strength (1-10)
+  
+logging:
+  level: 'INFO'  # DEBUG, INFO, WARNING, ERROR
+  format: '{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}'
+  file: 'logs/ocr_engine.log'
+  rotation: '100 MB'  # Log rotation size
+  retention: '30 days'  # Keep logs for 30 days
+
+performance:
+  # Processing Timeouts
+  max_processing_time: 30  # seconds
+  
+  # Batch Processing
+  batch_enabled: false  # Enable for Week 3
+  batch_size: 10
+  
+  # Caching
+  cache_preprocessed: false  # Cache preprocessed images
