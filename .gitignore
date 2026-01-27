@@ -2,19 +2,40 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
 venv/
 env/
-.Python
-*.egg-info/
+ENV/
 
-# Temp files
-data/temp/*
-logs/*.log
+# PaddleOCR models (large files)
+*.pdparams
+*.pdiparams
+.paddleocr/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+data/temp/
+*.tmp
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Test files
+test_*.py
+*_test.py
+
+# Credentials
+.env
+*.key
+config/*_secret.yaml
