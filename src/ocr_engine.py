@@ -128,7 +128,10 @@ class OCREngine:
                 logger.warning(f"No text detected in {image_path}")
                 return {
                     'status': 'no_text_found',
+                    'text': '',  # Empty text when no text found
                     'lines': [],
+                    'lines_detected': 0,
+                    'average_confidence': 0.0,
                     'processing_time_ms': int((time.time() - start_time) * 1000)
                 }
             
@@ -143,11 +146,15 @@ class OCREngine:
             avg_confidence = np.mean([line['confidence'] for line in lines])
             processing_time = int((time.time() - start_time) * 1000)
             
+            # Create full text string (concatenate all lines)
+            full_text = "\n".join([line['text'] for line in lines])
+            
             logger.info(f"Extracted {len(lines)} lines in {processing_time}ms")
             logger.info(f"Average confidence: {avg_confidence:.2f}")
             
             return {
                 'status': 'success',
+                'text': full_text,  # Added full text
                 'lines_detected': len(lines),
                 'processing_time_ms': processing_time,
                 'average_confidence': round(float(avg_confidence), 3),
@@ -170,14 +177,12 @@ class OCREngine:
         for line in result:
             text_info = {
                 'text': line[1][0],  # The actual text
+                'confidence': round(float(line[1][1]), 3),  # Always include confidence
+                'bbox': line[0]  # Always include bounding box for API compatibility
             }
             
-            if return_confidence:
-                text_info['confidence'] = round(float(line[1][1]), 3)
-            
             if return_positions:
-                # Bounding box coordinates: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                text_info['box'] = line[0]
+                # Additional position statistics
                 text_info['position'] = self._calculate_position_stats(line[0])
             
             lines.append(text_info)
