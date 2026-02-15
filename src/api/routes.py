@@ -104,8 +104,10 @@ async def scan_receipt(
             status="success",
             filename=file.filename,
             text=result['text'],
+            formatted_text=result.get('formatted_text'),
             confidence=result['average_confidence'],
             lines_detected=result['lines_detected'],
+            rows_detected=result.get('rows_detected'),
             lines=[
                 {
                     'text': line['text'],
@@ -114,6 +116,7 @@ async def scan_receipt(
                 }
                 for line in result['lines']
             ],
+            rows=result.get('rows'),
             processing_time_ms=result['processing_time_ms']
         )
     
@@ -143,9 +146,10 @@ async def scan_with_metadata(
     - `preprocess`: Apply preprocessing (default: True)
     
     **Returns:**
-    - Extracted text
+    - Extracted text (formatted and raw)
+    - All lines with confidence scores
     - Merchant name, date, total amount
-    - Confidence scores
+    - Processing details
     
     **Example:**
     ```bash
@@ -169,12 +173,25 @@ async def scan_with_metadata(
             status="success",
             filename=file.filename,
             text=result['text'],
+            formatted_text=result.get('formatted_text'),
             confidence=result['average_confidence'],
             lines_detected=result['lines_detected'],
-            merchant_name=result.get('merchant_name'),
-            date=result.get('date'),
-            total=result.get('total'),
-            items_count=result.get('items_count', 0),
+            rows_detected=result.get('rows_detected'),
+            lines=[
+                {
+                    'text': line['text'],
+                    'confidence': line['confidence'],
+                    'bbox': line['bbox']
+                }
+                for line in result['lines']
+            ],
+            rows=result.get('rows'),
+            metadata={
+                'merchant_name': result.get('merchant_name'),
+                'date': result.get('date'),
+                'total_amount': result.get('total'),
+                'estimated_items': result.get('items_count', 0)
+            },
             processing_time_ms=result['processing_time_ms']
         )
     
@@ -245,8 +262,10 @@ async def scan_multiple(
             status="success",
             filename=f"{len(files)} images",
             text=result['text'],
+            formatted_text=result.get('formatted_text'),
             confidence=result['average_confidence'],
             lines_detected=result['lines_detected'],
+            rows_detected=result.get('rows_detected'),
             lines=[
                 {
                     'text': line['text'],
@@ -255,6 +274,7 @@ async def scan_multiple(
                 }
                 for line in result['lines']
             ],
+            rows=result.get('rows'),
             processing_time_ms=result['processing_time_ms'],
             stitching_method=result.get('stitching_method')
         )

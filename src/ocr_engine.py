@@ -58,7 +58,7 @@ class OCREngine:
             logger.warning(f"Config file not found: {config_path}, using defaults")
             return self._default_config()
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         return config
