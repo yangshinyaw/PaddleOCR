@@ -39,3 +39,9 @@ test_*.py
 .env
 *.key
 config/*_secret.yaml
+
+# SSL Certificates (regenerate locally)
+ssl/
+*.pem
+*.key
+*.crt
