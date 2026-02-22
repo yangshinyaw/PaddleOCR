@@ -2,7 +2,7 @@
 let currentFile = null;
 let currentResults = null;
 let videoStream = null;
-let currentTab = 'formatted';
+let currentTab = 'raw';  // CHANGED: Default to 'raw' instead of 'formatted'
 let edgeDetector = null;
 let detectedCorners = null;
 
@@ -28,8 +28,31 @@ function toggleMultiImageMode() {
         capturedImages = [];
         currentImageIndex = 0;
         showMultiImageStatus();
+        
+        // Update upload method text
+        updateUploadMethodText(true);
     } else {
         hideMultiImageStatus();
+        
+        // Restore upload method text
+        updateUploadMethodText(false);
+    }
+}
+
+/**
+ * Update upload method description based on multi-image mode
+ */
+function updateUploadMethodText(isMultiMode) {
+    const uploadMethod = document.getElementById('uploadMethod');
+    if (!uploadMethod) return;
+    
+    const uploadText = uploadMethod.querySelector('p');
+    if (uploadText) {
+        if (isMultiMode) {
+            uploadText.textContent = 'Select multiple images to stitch';
+        } else {
+            uploadText.textContent = 'Choose from your device';
+        }
     }
 }
 
@@ -954,13 +977,24 @@ function closeCamera() {
 function handleFileSelect(event) {
     console.log('📁 File selection event triggered');
     
-    const file = event.target.files[0];
+    const files = event.target.files;
     
-    if (!file) {
-        console.log('❌ No file selected');
+    if (!files || files.length === 0) {
+        console.log('❌ No files selected');
         return;
     }
     
+    console.log(`✅ ${files.length} file(s) selected`);
+    
+    // Check if multi-image mode is enabled
+    if (multiImageMode && files.length > 1) {
+        console.log('📸 Multi-image mode: Processing multiple uploaded files');
+        handleMultipleFileUpload(files, event);  // FIXED: Pass event
+        return;
+    }
+    
+    // Single file mode (original behavior)
+    const file = files[0];
     console.log('✅ File selected:', file.name, 'Type:', file.type, 'Size:', file.size);
 
     // Validate file type
@@ -982,6 +1016,95 @@ function handleFileSelect(event) {
     currentFile = file;
     console.log('✅ File validated, showing preview...');
     showPreview(file);
+}
+
+/**
+ * Handle multiple file uploads in multi-image mode
+ */
+async function handleMultipleFileUpload(files, event) {  // FIXED: Accept event parameter
+    console.log(`📤 Processing ${files.length} uploaded files for stitching`);
+    
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+    const maxSize = 10 * 1024 * 1024;
+    
+    // Validate all files first
+    const validFiles = [];
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        if (!validTypes.includes(file.type)) {
+            showError(`Invalid file type: ${file.name}. Only JPG and PNG allowed for multi-image stitching.`);
+            return;
+        }
+        
+        if (file.size > maxSize) {
+            showError(`File too large: ${file.name}. Maximum size is 10MB.`);
+            return;
+        }
+        
+        validFiles.push(file);
+    }
+    
+    if (validFiles.length < 2) {
+        showError('Please select at least 2 images for stitching');
+        return;
+    }
+    
+    console.log(`✅ All ${validFiles.length} files validated`);
+    
+    // Show processing indicator
+    document.getElementById('processingIndicator').classList.add('active');
+    hideError();
+    
+    try {
+        // Create FormData with all files
+        const formData = new FormData();
+        
+        validFiles.forEach((file, index) => {
+            formData.append('files', file);
+            console.log(`📎 Added file ${index + 1}: ${file.name}`);
+        });
+        
+        // Enable stitching
+        formData.append('stitch', 'true');
+        
+        console.log('📤 Sending multiple files to API for stitching...');
+        
+        const response = await fetch(`${API_BASE_URL}/api/v1/ocr/scan-multiple`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        console.log('📥 Response status:', response.status);
+        
+        if (!response.ok) {
+            const error = await response.json();
+            console.error('❌ API Error:', error);
+            throw new Error(error.detail || 'Stitching failed');
+        }
+        
+        const results = await response.json();
+        console.log('✅ Stitching results received:', results);
+        
+        // Display results
+        currentResults = results;
+        displayResults(results);
+        
+        // Show stitching info
+        if (results.stitching_method) {
+            showStitchingInfo(results.stitching_method, validFiles.length);
+        }
+        
+        // Clear the file input for next upload
+        if (event && event.target) {  // FIXED: Check if event exists
+            event.target.value = '';
+        }
+        
+    } catch (error) {
+        console.error('💥 Error processing multiple files:', error);
+        showError(`Stitching failed: ${error.message}`);
+        document.getElementById('processingIndicator').classList.remove('active');
+    }
 }
 
 function showPreview(file) {
@@ -1163,11 +1286,6 @@ function displayResults(results) {
     // Display statistics
     displayStatistics(results);
 
-    // Display formatted text (prioritize formatted_text if available)
-    const formattedText = results.formatted_text || results.text || '';
-    console.log('Formatted text length:', formattedText.length);
-    document.getElementById('formattedText').textContent = formattedText;
-
     // Display raw text
     const rawText = results.text || '';
     console.log('Raw text length:', rawText.length);
@@ -1214,36 +1332,113 @@ function displayStatistics(results) {
     `;
 }
 
+// UPDATED: Fixed metadata display function
 function displayMetadata(results) {
     const metadataGrid = document.getElementById('metadataGrid');
     
-    // Handle both old and new metadata structures
+    if (!metadataGrid) {
+        console.error('❌ metadataGrid element not found!');
+        return;
+    }
+    
+    // Extract metadata - FIXED to use correct nested structure
     const metadata = results.metadata || {};
-    const merchant = metadata.merchant_name || results.merchant_name || 'Not detected';
-    const total = metadata.total_amount || results.total || 'Not detected';
-    const date = metadata.date || results.date || 'Not detected';
-    const items = metadata.estimated_items || results.items_count || 'N/A';
+    
+    // Get essential fields with correct keys
+    const storeName = metadata.store_name || 'Not detected';
+    const invoiceNumber = metadata.invoice_number || 'Not detected';
+    const date = metadata.date || 'Not detected';
+    const items = metadata.items || [];
 
-    console.log('Metadata:', { merchant, total, date, items });
+    console.log('🔍 Displaying metadata:', { storeName, invoiceNumber, date, itemCount: items.length });
 
-    metadataGrid.innerHTML = `
-        <div class="metadata-item">
-            <label>Merchant</label>
-            <span class="value">${merchant}</span>
-        </div>
-        <div class="metadata-item">
-            <label>Total Amount</label>
-            <span class="value">${total}</span>
-        </div>
-        <div class="metadata-item">
-            <label>Date</label>
-            <span class="value">${date}</span>
-        </div>
-        <div class="metadata-item">
-            <label>Estimated Items</label>
-            <span class="value">${items}</span>
+    // Build HTML - 2x2 Grid showing only: Store Name, Invoice #, Date, Items
+    let html = `
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 25px;">
+            <h3 style="margin: 0 0 20px 0; font-size: 1.3rem; font-weight: 600; border-bottom: 2px solid rgba(255,255,255,0.3); padding-bottom: 12px;">
+                📋 Receipt Information
+            </h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Store Name</div>
+                    <div style="font-size: 1.1rem; font-weight: 600;">${storeName}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Sales Invoice / Receipt #</div>
+                    <div style="font-size: 1.1rem; font-weight: 600; font-family: monospace;">${invoiceNumber}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Date</div>
+                    <div style="font-size: 1.1rem; font-weight: 600;">${date}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Total Items</div>
+                    <div style="font-size: 1.1rem; font-weight: 600;">${items.length || 0} ${items.length === 1 ? 'item' : 'items'}</div>
+                </div>
+            </div>
         </div>
     `;
+    
+    // Show items with prices
+    if (items && items.length > 0) {
+        html += `
+            <div style="margin-top: 25px;">
+                <h3 style="color: var(--dark); margin-bottom: 15px; border-bottom: 2px solid var(--primary); padding-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M3 1a1 1 0 000 2h1.22l.305 1.222a.997.997 0 00.01.042l1.358 5.43-.893.892C3.74 11.846 4.632 14 6.414 14H15a1 1 0 000-2H6.414l1-1H14a1 1 0 00.894-.553l3-6A1 1 0 0017 3H6.28l-.31-1.243A1 1 0 005 1H3zM16 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM6.5 18a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
+                    </svg>
+                    Items Detected (${items.length})
+                </h3>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    ${items.map((item, i) => `
+                        <div style="background: #f8fafc; border-left: 4px solid var(--primary); padding: 15px 18px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600; color: var(--dark); margin-bottom: 8px; font-size: 1.05rem;">
+                                        <span style="display: inline-block; background: var(--primary); color: white; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 0.85rem; margin-right: 10px;">${i + 1}</span>
+                                        ${item.name}
+                                    </div>
+                                    ${item.sku ? `
+                                        <div style="color: #64748b; font-size: 0.9rem; margin-left: 34px; display: flex; align-items: center; gap: 8px;">
+                                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/>
+                                            </svg>
+                                            <span>SKU: <span style="font-family: 'Courier New', monospace; font-weight: 600;">${item.sku}</span></span>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                <div style="font-weight: 700; color: var(--success); font-size: 1.25rem; white-space: nowrap; margin-left: 20px;">
+                                    ₱${item.price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                ${items.length > 0 ? `
+                    <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 600; font-size: 1.1rem;">Total ${items.length} ${items.length === 1 ? 'Item' : 'Items'}</span>
+                        <span style="font-weight: 700; font-size: 1.3rem;">₱${items.reduce((sum, item) => sum + item.price, 0).toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    } else {
+        html += `
+            <div style="margin-top: 25px; padding: 25px; background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-radius: 10px; text-align: center; color: #92400e; border: 2px solid #fbbf24;">
+                <svg width="32" height="32" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: inline-block; vertical-align: middle; margin-bottom: 10px;">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <div style="font-weight: 600; font-size: 1.1rem; margin-bottom: 8px;">No Items Detected</div>
+                <div style="font-size: 0.95rem; opacity: 0.9;">
+                    The system couldn't identify individual items with prices.<br><br>
+                    <strong>Tip:</strong> Check the "All Lines" tab to see the raw OCR output.
+                </div>
+            </div>
+        `;
+    }
+    
+    metadataGrid.innerHTML = html;
 }
 
 function displayLines(lines) {
@@ -1275,6 +1470,7 @@ function displayLines(lines) {
 
 // ==================== TAB SWITCHING ====================
 
+// UPDATED: Fixed switchTab function
 function switchTab(tabName) {
     currentTab = tabName;
 
@@ -1282,12 +1478,9 @@ function switchTab(tabName) {
     document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
 
-    // Show selected tab
-    const tabButton = event.target;
-    const tabContent = document.getElementById(`${tabName}Tab`);
-    
-    tabButton.classList.add('active');
-    tabContent.classList.add('active');
+    // Show selected tab - FIXED
+    document.querySelector(`button.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
+    document.getElementById(`${tabName}Tab`).classList.add('active');
 }
 
 // ==================== ACTIONS ====================
@@ -1296,14 +1489,17 @@ function copyToClipboard() {
     let textToCopy = '';
     
     switch(currentTab) {
-        case 'formatted':
-            textToCopy = document.getElementById('formattedText').textContent;
-            break;
         case 'raw':
             textToCopy = document.getElementById('rawText').textContent;
             break;
+        case 'metadata':
+            // Copy metadata as JSON
+            if (currentResults && currentResults.metadata) {
+                textToCopy = JSON.stringify(currentResults.metadata, null, 2);
+            }
+            break;
         default:
-            textToCopy = document.getElementById('formattedText').textContent;
+            textToCopy = document.getElementById('rawText').textContent;
     }
 
     navigator.clipboard.writeText(textToCopy).then(() => {
@@ -1347,7 +1543,7 @@ function reset() {
     // Reset state
     currentFile = null;
     currentResults = null;
-    currentTab = 'formatted';
+    currentTab = 'raw';  // CHANGED: Reset to 'raw' instead of 'formatted'
     
     // Clear multi-image state
     if (capturedImages.length > 0) {

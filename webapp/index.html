@@ -855,7 +855,7 @@
                     </div>
                 </div>
 
-                <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFileSelect(event)">
+                <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFileSelect(event)" multiple>
 
                 <!-- Camera Container -->
 <div id="cameraContainer">
@@ -947,18 +947,13 @@
 
                 <!-- Tabs -->
                 <div class="tabs">
-                    <button class="tab active" onclick="switchTab('formatted')">Formatted Text</button>
-                    <button class="tab" onclick="switchTab('raw')">Raw Text</button>
+                    <button class="tab active" onclick="switchTab('raw')">Raw Text</button>
                     <button class="tab" onclick="switchTab('metadata')">Metadata</button>
                     <button class="tab" onclick="switchTab('lines')">All Lines</button>
                 </div>
 
                 <!-- Tab Contents -->
-                <div class="tab-content active" id="formattedTab">
-                    <div class="text-output" id="formattedText"></div>
-                </div>
-
-                <div class="tab-content" id="rawTab">
+                <div class="tab-content active" id="rawTab">
                     <div class="text-output" id="rawText"></div>
                 </div>
 

@@ -1,6 +1,6 @@
 """
 API Routes - All API endpoints
-Handles file uploads, OCR processing, and responses
+FIXED: Properly integrates with GeneralMetadataExtractor
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -92,7 +92,7 @@ async def scan_receipt(
         file_path = save_upload(file)
         logger.info(f"Processing: {file.filename}")
         
-        # Process
+        # Process (no metadata extraction for basic scan)
         result = processor.process_single_image(
             str(file_path),
             preprocess=preprocess,
@@ -103,21 +103,21 @@ async def scan_receipt(
         return OCRResponse(
             status="success",
             filename=file.filename,
-            text=result['text'],
+            text=result.get('text', ''),
             formatted_text=result.get('formatted_text'),
-            confidence=result['average_confidence'],
-            lines_detected=result['lines_detected'],
+            confidence=result.get('average_confidence', 0),
+            lines_detected=result.get('lines_detected', 0),
             rows_detected=result.get('rows_detected'),
             lines=[
                 {
-                    'text': line['text'],
-                    'confidence': line['confidence'],
-                    'bbox': line['bbox']
+                    'text': line.get('text', ''),
+                    'confidence': line.get('confidence', 0),
+                    'bbox': line.get('bbox', [])
                 }
-                for line in result['lines']
+                for line in result.get('lines', [])
             ],
             rows=result.get('rows'),
-            processing_time_ms=result['processing_time_ms']
+            processing_time_ms=result.get('processing_time_ms', 0)
         )
     
     except HTTPException:
@@ -139,16 +139,17 @@ async def scan_with_metadata(
     """
     **Scan receipt and extract metadata**
     
-    Extract text + metadata (merchant, date, total) from receipt.
+    Extract text + metadata (store, invoice, date, items) from receipt.
+    Uses GeneralMetadataExtractor - works with ANY Philippines store.
     
     **Parameters:**
     - `file`: Receipt image
     - `preprocess`: Apply preprocessing (default: True)
     
     **Returns:**
-    - Extracted text (formatted and raw)
+    - Extracted text (raw and formatted)
     - All lines with confidence scores
-    - Merchant name, date, total amount
+    - Store name, invoice #, date, items with SKU & price
     - Processing details
     
     **Example:**
@@ -163,42 +164,60 @@ async def scan_with_metadata(
         file_path = save_upload(file)
         logger.info(f"Processing with metadata: {file.filename}")
         
+        # Process with metadata extraction
         result = processor.process_single_image(
             str(file_path),
             preprocess=preprocess,
-            extract_metadata=True
+            extract_metadata=True  # This triggers GeneralMetadataExtractor
         )
+        
+        # Extract the metadata dict (created by GeneralMetadataExtractor)
+        extracted_metadata = result.get('metadata', {})
+        
+        # Build proper metadata response
+        metadata_response = {
+            'store_name': extracted_metadata.get('store_name'),
+            'invoice_number': extracted_metadata.get('invoice_number'),
+            'date': extracted_metadata.get('date'),
+            'time': extracted_metadata.get('time'),
+            'total_amount': extracted_metadata.get('total_amount'),
+            'vat_amount': extracted_metadata.get('vat_amount'),
+            'tin': extracted_metadata.get('tin'),
+            'item_count': extracted_metadata.get('item_count', 0),
+            'has_vat': extracted_metadata.get('has_vat', False),
+            'items': extracted_metadata.get('items', [])
+        }
+        
+        logger.info(f"✅ Metadata extracted: Store={metadata_response['store_name']}, "
+                   f"Invoice={metadata_response['invoice_number']}, "
+                   f"Items={metadata_response['item_count']}")
         
         return MetadataResponse(
             status="success",
             filename=file.filename,
-            text=result['text'],
+            text=result.get('text', ''),
             formatted_text=result.get('formatted_text'),
-            confidence=result['average_confidence'],
-            lines_detected=result['lines_detected'],
+            confidence=result.get('average_confidence', 0),
+            lines_detected=result.get('lines_detected', 0),
             rows_detected=result.get('rows_detected'),
             lines=[
                 {
-                    'text': line['text'],
-                    'confidence': line['confidence'],
-                    'bbox': line['bbox']
+                    'text': line.get('text', ''),
+                    'confidence': line.get('confidence', 0),
+                    'bbox': line.get('bbox', [])
                 }
-                for line in result['lines']
+                for line in result.get('lines', [])
             ],
             rows=result.get('rows'),
-            metadata={
-                'merchant_name': result.get('merchant_name'),
-                'date': result.get('date'),
-                'total_amount': result.get('total'),
-                'estimated_items': result.get('items_count', 0)
-            },
-            processing_time_ms=result['processing_time_ms']
+            metadata=metadata_response,
+            processing_time_ms=result.get('processing_time_ms', 0)
         )
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error: {e}")
+        logger.exception("Full traceback:")  # Add full traceback for debugging
         raise HTTPException(500, str(e))
     finally:
         if file_path and file_path.exists():
@@ -261,21 +280,21 @@ async def scan_multiple(
         return OCRResponse(
             status="success",
             filename=f"{len(files)} images",
-            text=result['text'],
+            text=result.get('text', ''),
             formatted_text=result.get('formatted_text'),
-            confidence=result['average_confidence'],
-            lines_detected=result['lines_detected'],
+            confidence=result.get('average_confidence', 0),
+            lines_detected=result.get('lines_detected', 0),
             rows_detected=result.get('rows_detected'),
             lines=[
                 {
-                    'text': line['text'],
-                    'confidence': line['confidence'],
-                    'bbox': line['bbox']
+                    'text': line.get('text', ''),
+                    'confidence': line.get('confidence', 0),
+                    'bbox': line.get('bbox', [])
                 }
-                for line in result['lines']
+                for line in result.get('lines', [])
             ],
             rows=result.get('rows'),
-            processing_time_ms=result['processing_time_ms'],
+            processing_time_ms=result.get('processing_time_ms', 0),
             stitching_method=result.get('stitching_method')
         )
     
@@ -331,25 +350,28 @@ async def batch_scan(
                 validate_file(file)
                 file_path = save_upload(file)
                 
-                # Process
+                # Process with metadata
                 result = processor.process_single_image(
                     str(file_path),
                     preprocess=preprocess,
                     extract_metadata=True
                 )
                 
+                # Extract metadata
+                metadata = result.get('metadata', {})
+                
                 results.append({
                     'filename': file.filename,
                     'status': 'success',
-                    'text': result['text'],
-                    'confidence': result['average_confidence'],
-                    'lines_detected': result['lines_detected'],
-                    'merchant_name': result.get('merchant_name'),
-                    'total': result.get('total'),
-                    'processing_time_ms': result['processing_time_ms']
+                    'text': result.get('text', ''),
+                    'confidence': result.get('average_confidence', 0),
+                    'lines_detected': result.get('lines_detected', 0),
+                    'merchant_name': metadata.get('store_name'),  # Fixed key
+                    'total': metadata.get('total_amount'),         # Fixed key
+                    'processing_time_ms': result.get('processing_time_ms', 0)
                 })
                 
-                total_time += result['processing_time_ms']
+                total_time += result.get('processing_time_ms', 0)
             
             except Exception as e:
                 results.append({

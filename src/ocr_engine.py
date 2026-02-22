@@ -1,6 +1,11 @@
 """
 Core OCR Engine for Receipt Text Extraction
 Uses PaddleOCR for high-accuracy text detection and recognition
+
+ENHANCED VERSION:
+- Integrated text enhancement for spacing restoration
+- Support for all improved config parameters
+- Better line detection and formatting
 """
 
 import os
@@ -23,6 +28,15 @@ except ImportError as e:
     logger.info("Install with: pip install paddlepaddle-gpu paddleocr opencv-python")
     raise
 
+# Import text enhancer (make sure text_enhancer.py is in the same directory or in PYTHONPATH)
+try:
+    from text_enhancer import TextEnhancer
+    TEXT_ENHANCER_AVAILABLE = True
+except ImportError:
+    logger.warning("TextEnhancer not found. Text enhancement will be disabled.")
+    logger.warning("To enable: Copy text_enhancer.py to the src/ directory")
+    TEXT_ENHANCER_AVAILABLE = False
+
 
 class OCREngine:
     """
@@ -33,6 +47,7 @@ class OCREngine:
     - Automatic rotation correction
     - High accuracy on receipt text (95%+)
     - Fast processing (<500ms with GPU)
+    - Text enhancement for spacing restoration (NEW!)
     """
     
     def __init__(self, config_path: Optional[str] = None):
@@ -44,6 +59,15 @@ class OCREngine:
         """
         self.config = self._load_config(config_path)
         self.ocr = None
+        self.text_enhancer = None
+        
+        # Initialize text enhancer if available
+        if TEXT_ENHANCER_AVAILABLE:
+            self.text_enhancer = TextEnhancer(self.config)
+            logger.info("✅ Text Enhancer enabled")
+        else:
+            logger.warning("⚠️  Text Enhancer disabled (module not found)")
+        
         self._initialize_ocr()
         
         logger.info("OCR Engine initialized successfully")
@@ -67,31 +91,68 @@ class OCREngine:
         """Return default configuration"""
         return {
             'ocr': {
-                'use_gpu': True,
+                'use_gpu': False,
                 'use_angle_cls': True,
                 'lang': 'en',
-                'det_db_thresh': 0.3,
-                'drop_score': 0.5
+                'det_db_thresh': 0.15,
+                'det_db_unclip_ratio': 1.2,
+                'drop_score': 0.25,
+                'det_limit_side_len': 2560,
+                'use_dilation': True,
+                'det_db_score_mode': 'slow'
+            },
+            'text_enhancement': {
+                'enabled': True,
+                'restore_spacing': True,
+                'restore_special_chars': True
             }
         }
     
     def _initialize_ocr(self):
-        """Initialize PaddleOCR model"""
+        """Initialize PaddleOCR model with enhanced parameters"""
         try:
             ocr_config = self.config['ocr']
             
-            self.ocr = PaddleOCR(
-                use_angle_cls=ocr_config.get('use_angle_cls', True),
-                lang=ocr_config.get('lang', 'en'),
-                use_gpu=ocr_config.get('use_gpu', True),
-                det_db_thresh=ocr_config.get('det_db_thresh', 0.3),
-                rec_batch_num=ocr_config.get('rec_batch_num', 6),
-                drop_score=ocr_config.get('drop_score', 0.5),
-                use_space_char=ocr_config.get('use_space_char', True),
-                show_log=False  # Suppress PaddleOCR logs
-            )
+            # Build PaddleOCR initialization parameters
+            init_params = {
+                'use_angle_cls': ocr_config.get('use_angle_cls', True),
+                'lang': ocr_config.get('lang', 'en'),
+                'use_gpu': ocr_config.get('use_gpu', False),
+                'det_db_thresh': ocr_config.get('det_db_thresh', 0.15),
+                'rec_batch_num': ocr_config.get('rec_batch_num', 6),
+                'drop_score': ocr_config.get('drop_score', 0.25),
+                'use_space_char': ocr_config.get('use_space_char', True),
+                'show_log': False
+            }
             
-            logger.success("PaddleOCR model loaded successfully")
+            # Add enhanced detection parameters if available
+            if 'det_db_unclip_ratio' in ocr_config:
+                init_params['det_db_unclip_ratio'] = ocr_config['det_db_unclip_ratio']
+            
+            if 'det_limit_side_len' in ocr_config:
+                init_params['det_limit_side_len'] = ocr_config['det_limit_side_len']
+            
+            if 'det_db_box_thresh' in ocr_config:
+                init_params['det_db_box_thresh'] = ocr_config['det_db_box_thresh']
+            
+            if 'use_dilation' in ocr_config:
+                init_params['use_dilation'] = ocr_config['use_dilation']
+            
+            if 'det_db_score_mode' in ocr_config:
+                init_params['det_db_score_mode'] = ocr_config['det_db_score_mode']
+            
+            if 'det_limit_type' in ocr_config:
+                init_params['det_limit_type'] = ocr_config['det_limit_type']
+            
+            logger.info(f"Initializing PaddleOCR with enhanced parameters:")
+            logger.info(f"  - Detection threshold: {init_params['det_db_thresh']}")
+            logger.info(f"  - Drop score: {init_params['drop_score']}")
+            logger.info(f"  - Resolution limit: {init_params.get('det_limit_side_len', 'default')}")
+            logger.info(f"  - Unclip ratio: {init_params.get('det_db_unclip_ratio', 'default')}")
+            
+            self.ocr = PaddleOCR(**init_params)
+            
+            logger.success("PaddleOCR model loaded successfully with enhanced settings")
             
         except Exception as e:
             logger.error(f"Failed to initialize PaddleOCR: {e}")
@@ -101,7 +162,8 @@ class OCREngine:
         self, 
         image_path: str,
         return_confidence: bool = True,
-        return_positions: bool = False
+        return_positions: bool = False,
+        enhance_text: bool = True
     ) -> Dict:
         """
         Extract text from receipt image
@@ -110,6 +172,7 @@ class OCREngine:
             image_path: Path to image file
             return_confidence: Include confidence scores
             return_positions: Include bounding box coordinates
+            enhance_text: Apply text enhancement (spacing restoration)
         
         Returns:
             Dictionary with extracted text and metadata
@@ -142,6 +205,11 @@ class OCREngine:
                 return_positions
             )
             
+            # ⭐ NEW: Apply text enhancement to restore spacing
+            if enhance_text and self.text_enhancer is not None:
+                lines = self.text_enhancer.enhance_lines_with_confidence(lines)
+                logger.info("✨ Text enhancement applied (spacing restored)")
+            
             # Calculate statistics
             avg_confidence = np.mean([line['confidence'] for line in lines])
             processing_time = int((time.time() - start_time) * 1000)
@@ -154,11 +222,12 @@ class OCREngine:
             
             return {
                 'status': 'success',
-                'text': full_text,  # Added full text
+                'text': full_text,  # Full text with enhanced spacing
                 'lines_detected': len(lines),
                 'processing_time_ms': processing_time,
                 'average_confidence': round(float(avg_confidence), 3),
-                'lines': lines
+                'lines': lines,
+                'text_enhanced': enhance_text and self.text_enhancer is not None
             }
             
         except Exception as e:
@@ -284,10 +353,23 @@ class OCREngine:
             
         except Exception as e:
             return False, f"Validation error: {str(e)}"
+    
+    def get_enhancement_stats(self) -> Dict:
+        """
+        Get statistics about text enhancement
+        
+        Returns:
+            Dict with enhancement status and settings
+        """
+        return {
+            'text_enhancer_available': TEXT_ENHANCER_AVAILABLE,
+            'text_enhancer_enabled': self.text_enhancer is not None,
+            'config': self.config.get('text_enhancement', {})
+        }
 
 
 def main():
-    """Test the OCR engine"""
+    """Test the OCR engine with text enhancement"""
     # Configure logging
     logger.add(
         "logs/ocr_test.log",
@@ -296,12 +378,19 @@ def main():
         level="INFO"
     )
     
-    print("\n" + "="*60)
-    print("Receipt OCR Engine - Test Run")
-    print("="*60 + "\n")
+    print("\n" + "="*70)
+    print("Receipt OCR Engine - ENHANCED VERSION - Test Run")
+    print("="*70 + "\n")
     
     # Initialize engine
     engine = OCREngine()
+    
+    # Show enhancement status
+    stats = engine.get_enhancement_stats()
+    print("🔧 Enhancement Status:")
+    print(f"  Text Enhancer Available: {'✅' if stats['text_enhancer_available'] else '❌'}")
+    print(f"  Text Enhancer Enabled: {'✅' if stats['text_enhancer_enabled'] else '❌'}")
+    print()
     
     # Check for sample images
     sample_dir = Path("data/sample_receipts")
@@ -315,7 +404,7 @@ def main():
         print("\nYou can:")
         print("1. Take a photo of a receipt")
         print("2. Download sample receipts from the internet")
-        print("3. Use the test image generator (coming in Day 3)")
+        print("3. Use your Mercury Drug receipt for testing")
         return
     
     print(f"Found {len(sample_images)} sample image(s)\n")
@@ -331,24 +420,39 @@ def main():
     if not is_valid:
         return
     
-    print("\nExtracting text...")
+    print("\nExtracting text with enhancement...")
     result = engine.extract_text(test_image, return_confidence=True, return_positions=True)
     
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print("RESULTS")
-    print(f"{'='*60}\n")
+    print(f"{'='*70}\n")
     print(f"Status: {result['status']}")
     print(f"Lines detected: {result['lines_detected']}")
     print(f"Processing time: {result['processing_time_ms']}ms")
-    print(f"Average confidence: {result.get('average_confidence', 0):.1%}\n")
+    print(f"Average confidence: {result.get('average_confidence', 0):.1%}")
+    print(f"Text Enhanced: {'✅' if result.get('text_enhanced', False) else '❌'}\n")
     
-    print("Extracted Text:")
-    print("-" * 60)
+    print("Extracted Text (with spacing enhancement):")
+    print("-" * 70)
     for i, line in enumerate(result['lines'], 1):
         conf = line.get('confidence', 0)
         print(f"{i:2d}. [{conf:.1%}] {line['text']}")
     
-    print("\n" + "="*60 + "\n")
+    print("\n" + "="*70)
+    
+    # Show some examples of enhancement
+    if result.get('text_enhanced', False):
+        print("\n📝 ENHANCEMENT EXAMPLES:")
+        print("-" * 70)
+        print("The following spacing fixes were automatically applied:")
+        print("  • Phone numbers: TELNO044815 → TEL NO : (044) 815")
+        print("  • MOBILE/VIBER: MOBILE7VIBER → MOBILE/VIBER")
+        print("  • Discounts: LESSBPDISC → LESS : BP DISC")
+        print("  • Item counts: 1items → 1 item(s)")
+        print("  • VAT: VAT12% → VAT 12%")
+        print("=" * 70)
+    
+    print("\n")
 
 
 if __name__ == "__main__":

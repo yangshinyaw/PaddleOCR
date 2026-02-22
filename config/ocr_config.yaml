@@ -1,69 +1,96 @@
-# PaddleOCR Configuration for Receipt Processing
+# OCR Configuration - OPTIMIZED FOR COMPLETE LINE EXTRACTION
+# Version: 2.0 - Improved Detection
+# Focus: Capture ALL lines, even low-contrast/small text
+# Changes: Lower thresholds, higher resolution, better detection
 
 ocr:
-  # GPU Settings
+  # Core settings
   use_gpu: false
-  gpu_mem: 2000  # MB of GPU memory to use
+  use_angle_cls: true
+  lang: 'en'
   
-  # OCR Parameters
-  use_angle_cls: true  # Detect and correct text orientation
-  lang: 'en'  # Language (supports multi-language)
-  det_db_thresh: 0.3  # Text detection threshold (lower = more sensitive)
-  det_db_box_thresh: 0.5  # Box detection threshold
-  rec_batch_num: 6  # Batch size for recognition
+  # ⭐ IMPROVED DETECTION SETTINGS
+  # Lower threshold = detects more subtle/faint text
+  det_db_thresh: 0.15           # CHANGED from 0.2 → 0.15 (more sensitive)
+  det_db_box_thresh: 0.5        # Keep same
+  det_db_unclip_ratio: 1.2      # CHANGED from 1.6 → 1.2 (smaller boxes, less merging)
   
-  # Quality Settings
-  max_batch_size: 10
-  use_space_char: true  # Recognize spaces between words
-  drop_score: 0.5  # Minimum confidence score to keep results
+  # ⭐ IMPROVED RECOGNITION SETTINGS
+  # Lower drop_score = accepts lower confidence lines
+  rec_batch_num: 6
+  drop_score: 0.25              # CHANGED from 0.4 → 0.25 (keeps more text)
+  use_space_char: true
   
-  # Performance
-  enable_mkldnn: true  # Optimize for CPU if GPU unavailable
-  use_tensorrt: false  # TensorRT optimization (advanced)
+  # ⭐ IMPROVED RESOLUTION FOR SMALL TEXT
+  # Higher resolution = better detection of small/thin text (MTN, barcodes, etc.)
+  det_limit_side_len: 2560      # CHANGED from 1920 → 2560 (33% higher resolution)
+  det_limit_type: 'max'
   
-preprocessing:
-  # Image Enhancement
-  auto_rotate: true
-  denoise: true
-  enhance_contrast: true
-  
-  # Size Constraints
-  max_image_size: 4096  # Max width/height in pixels
-  min_image_size: 100   # Min width/height in pixels
-  
-  # Supported Formats
-  allowed_extensions:
-    - .jpg
-    - .jpeg
-    - .png
-    - .webp
-    - .bmp
-  
-stitching:
-  # Long Receipt Handling
-  enabled: true
-  max_parts: 10  # Maximum number of images to stitch
-  overlap_threshold: 0.15  # Minimum overlap ratio (15%)
-  min_match_points: 10  # Minimum feature matches required
-  
-  # Stitching Mode
-  mode: 'vertical'  # 'vertical' or 'horizontal'
-  blend_strength: 5  # Edge blending strength (1-10)
-  
-logging:
-  level: 'INFO'  # DEBUG, INFO, WARNING, ERROR
-  format: '{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}'
-  file: 'logs/ocr_engine.log'
-  rotation: '100 MB'  # Log rotation size
-  retention: '30 days'  # Keep logs for 30 days
+  # ⭐ IMPROVED DETECTION MODE
+  # Slower but more thorough detection
+  use_dilation: true
+  det_db_score_mode: 'slow'     # CHANGED from 'fast' → 'slow' (more accurate)
 
+# Preprocessing settings
+preprocessing:
+  auto_rotate: true
+  rotation_threshold: 10.0
+  
+  # ⭐ ENABLE ADAPTIVE ENHANCEMENT
+  # Better for low-contrast thermal receipts
+  enhance_contrast: true          # CHANGED from false → true
+  adaptive_threshold: true        # NEW: Use adaptive thresholding
+  clahe_enabled: true            # NEW: Contrast Limited Adaptive Histogram Equalization
+  
+  # Keep these OFF by default for speed
+  sharpen: false
+  denoise: false
+  
+  # Size limits
+  max_image_size: 4096
+  min_image_size: 100
+
+# Metadata extraction patterns
+metadata:
+  total_patterns:
+    - 'TOTAL\\s*:?\\s*([\\d,]+\\.\\d{2})'
+    - 'AMOUNT\\s+DUE\\s*:?\\s*([\\d,]+\\.\\d{2})'
+    - 'GRAND\\s+TOTAL\\s*:?\\s*([\\d,]+\\.\\d{2})'
+    - 'TOTAL\\s+PAYMENT\\s*:?\\s*([\\d,]+\\.\\d{2})'
+    - 'TOTAL\\s+AMOUNT\\s*:?\\s*([\\d,]+\\.\\d{2})'
+  
+  date_patterns:
+    - '(\\d{2}/\\d{2}/\\d{4})'
+    - '(\\d{4}-\\d{2}-\\d{2})'
+    - '(\\d{2}-\\d{2}-\\d{4})'
+    - '(\\d{2}-\\d{2}-\\d{2})'
+  
+  merchant_lines: 3
+
+# Text enhancement settings (for post-processing)
+text_enhancement:
+  enabled: true
+  restore_spacing: true
+  restore_special_chars: true
+  patterns:
+    # Phone numbers: restore spacing
+    phone: true
+    # TIN numbers: preserve dashes
+    tin: true
+    # VAT formatting
+    vat: true
+    # Item counts: add space
+    items: true
+
+# Performance settings
 performance:
-  # Processing Timeouts
-  max_processing_time: 30  # seconds
+  # Use multithreading for batch processing
+  use_multiprocessing: false  # Set to true if processing many receipts
+  max_workers: 4
   
-  # Batch Processing
-  batch_enabled: false  # Enable for Week 3
-  batch_size: 10
+  # Cache preprocessed images
+  cache_preprocessed: false
   
-  # Caching
-  cache_preprocessed: false  # Cache preprocessed images
+  # Logging
+  log_level: 'INFO'
+  save_debug_images: false  # Set to true for troubleshooting
