@@ -1,6 +1,8 @@
 """
 Image Stitching for Long Receipts
 Combines multiple receipt images into a single image for OCR processing
+
+UPDATED VERSION: Fixed white space gaps and alignment issues
 """
 
 import os
@@ -22,6 +24,7 @@ class ImageStitcher:
     - Feature matching for overlap detection
     - Edge blending for seamless joins
     - Fallback to simple concatenation
+    - FIXED: No white space gaps, proper alignment
     """
     
     def __init__(self, config_path: Optional[str] = None):
@@ -273,37 +276,130 @@ class ImageStitcher:
     
     def _simple_concatenate(self, images: List[np.ndarray]) -> Tuple[np.ndarray, dict]:
         """
-        Simple vertical concatenation without feature matching
-        Faster but less accurate
+        Simple vertical concatenation with proper alignment and overlap removal
+        
+        IMPROVEMENTS:
+        - Resize images to same width (no white padding)
+        - Detect and remove overlap between images
+        - Clean alignment without gaps
         """
-        logger.info("Using simple concatenation")
+        logger.info("Using simple concatenation with alignment")
         
-        # Get max width
-        max_width = max(img.shape[1] for img in images)
+        # Get dimensions
+        heights = [img.shape[0] for img in images]
+        widths = [img.shape[1] for img in images]
+        max_width = max(widths)
+        min_width = min(widths)
         
-        # Resize all images to same width
+        # Strategy: Resize all images to same width (avoid padding)
+        # Use the maximum width as target
+        target_width = max_width
+        
+        logger.info(f"Resizing all images to width: {target_width}px")
+        
         resized_images = []
         for img in images:
             h, w = img.shape[:2]
-            if w < max_width:
-                # Pad with white
-                padded = np.zeros((h, max_width, 3), dtype=np.uint8)
-                padded.fill(255)
-                padded[:, 0:w] = img
-                resized_images.append(padded)
+            if w != target_width:
+                # Resize to match target width, maintain aspect ratio
+                new_height = int(h * (target_width / w))
+                img_resized = cv2.resize(img, (target_width, new_height), interpolation=cv2.INTER_CUBIC)
+                resized_images.append(img_resized)
+                logger.debug(f"Resized image from {w}x{h} to {target_width}x{new_height}")
             else:
                 resized_images.append(img)
         
+        # Detect and remove overlap between consecutive images
+        final_images = [resized_images[0]]
+        total_overlap = 0
+        
+        for i in range(1, len(resized_images)):
+            prev_img = final_images[-1]
+            curr_img = resized_images[i]
+            
+            # Detect overlap by comparing bottom of previous with top of current
+            overlap_px = self._detect_overlap_pixels(prev_img, curr_img)
+            
+            if overlap_px > 0:
+                logger.info(f"Detected {overlap_px}px overlap, removing...")
+                # Crop the overlapping part from current image
+                curr_img = curr_img[overlap_px:, :]
+                total_overlap += overlap_px
+            
+            final_images.append(curr_img)
+        
         # Concatenate vertically
-        result = np.vstack(resized_images)
+        result = np.vstack(final_images)
         
         metadata = {
             'total_height': result.shape[0],
             'total_width': result.shape[1],
-            'concatenation': 'simple_vertical'
+            'concatenation': 'simple_vertical_aligned',
+            'overlap_removed_px': total_overlap,
+            'resize_method': 'aspect_ratio_preserved'
         }
         
+        logger.success(f"Stitched result: {result.shape[1]}x{result.shape[0]}px, removed {total_overlap}px overlap")
+        
         return result, metadata
+    
+    def _detect_overlap_pixels(self, img1: np.ndarray, img2: np.ndarray) -> int:
+        """
+        Detect how many pixels of overlap exist between two images
+        
+        Compares bottom of img1 with top of img2 to find matching region
+        
+        Args:
+            img1: First image (bottom part will be compared)
+            img2: Second image (top part will be compared)
+        
+        Returns:
+            Number of overlapping pixels (0 if no overlap detected)
+        """
+        h1 = img1.shape[0]
+        h2 = img2.shape[0]
+        
+        # Maximum overlap to check (don't check more than 30% of smaller image)
+        max_overlap = min(int(h1 * 0.3), int(h2 * 0.3), 200)
+        
+        if max_overlap < 10:
+            return 0
+        
+        best_overlap = 0
+        best_similarity = 0
+        
+        # Check different overlap amounts
+        for overlap in range(10, max_overlap, 5):
+            try:
+                # Get bottom section of img1
+                section1 = img1[-overlap:, :]
+                # Get top section of img2
+                section2 = img2[:overlap, :]
+                
+                # Ensure same dimensions
+                if section1.shape != section2.shape:
+                    continue
+                
+                # Calculate similarity using absolute difference
+                diff = cv2.absdiff(section1, section2)
+                similarity = 1 - (np.mean(diff) / 255)
+                
+                # If similarity is high, this is likely the overlap
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_overlap = overlap
+                    
+            except Exception as e:
+                logger.debug(f"Error checking overlap at {overlap}px: {e}")
+                continue
+        
+        # Only return overlap if similarity is high enough (70%+)
+        if best_similarity > 0.70:
+            logger.debug(f"Found overlap: {best_overlap}px with {best_similarity:.1%} similarity")
+            return best_overlap
+        
+        logger.debug(f"No significant overlap detected (best similarity: {best_similarity:.1%})")
+        return 0
     
     def detect_long_receipt(self, image_path: str) -> bool:
         """

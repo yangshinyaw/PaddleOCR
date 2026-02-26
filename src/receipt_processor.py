@@ -25,6 +25,15 @@ from utils import (
     setup_logging
 )
 
+# Rich metadata extractor — handles Mercury Drug, SM, and all PH stores
+try:
+    from general_metadata_extractor import GeneralMetadataExtractor as _GME
+    _metadata_extractor = _GME()
+    logger.info("GeneralMetadataExtractor loaded ✅")
+except ImportError:
+    _metadata_extractor = None
+    logger.warning("GeneralMetadataExtractor not found — falling back to utils.extract_receipt_metadata")
+
 
 class ReceiptProcessor:
     """
@@ -96,7 +105,10 @@ class ReceiptProcessor:
         # Extract metadata if requested
         if extract_metadata and result.get('status') == 'success':
             text_lines = [line['text'] for line in result['lines']]
-            metadata = extract_receipt_metadata(text_lines)
+            if _metadata_extractor is not None:
+                metadata = _metadata_extractor.extract(text_lines)
+            else:
+                metadata = extract_receipt_metadata(text_lines)
             result['metadata'] = metadata
         
         result['image_path'] = image_path
@@ -181,7 +193,10 @@ class ReceiptProcessor:
         # Extract metadata if requested
         if extract_metadata and result.get('status') == 'success':
             text_lines = [line['text'] for line in result['lines']]
-            metadata = extract_receipt_metadata(text_lines)
+            if _metadata_extractor is not None:
+                metadata = _metadata_extractor.extract(text_lines)
+            else:
+                metadata = extract_receipt_metadata(text_lines)
             result['metadata'] = metadata
         
         return result

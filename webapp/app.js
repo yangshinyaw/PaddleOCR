@@ -1349,6 +1349,8 @@ function displayMetadata(results) {
     const invoiceNumber = metadata.invoice_number || 'Not detected';
     const date = metadata.date || 'Not detected';
     const items = metadata.items || [];
+    // item_count = sum of all qty values (e.g. 35 yakult + 1 nido = 36)
+    const totalUnitCount = metadata.item_count || items.reduce((s, i) => s + (i.qty || 1), 0);
 
     console.log('🔍 Displaying metadata:', { storeName, invoiceNumber, date, itemCount: items.length });
 
@@ -1373,7 +1375,7 @@ function displayMetadata(results) {
                 </div>
                 <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
                     <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Total Items</div>
-                    <div style="font-size: 1.1rem; font-weight: 600;">${items.length || 0} ${items.length === 1 ? 'item' : 'items'}</div>
+                    <div style="font-size: 1.1rem; font-weight: 600;">${totalUnitCount || 0} ${totalUnitCount === 1 ? 'item' : 'items'}</div>
                 </div>
             </div>
         </div>
@@ -1387,17 +1389,30 @@ function displayMetadata(results) {
                     <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M3 1a1 1 0 000 2h1.22l.305 1.222a.997.997 0 00.01.042l1.358 5.43-.893.892C3.74 11.846 4.632 14 6.414 14H15a1 1 0 000-2H6.414l1-1H14a1 1 0 00.894-.553l3-6A1 1 0 0017 3H6.28l-.31-1.243A1 1 0 005 1H3zM16 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM6.5 18a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
                     </svg>
-                    Items Detected (${items.length})
+                    Items Detected (${totalUnitCount})
                 </h3>
                 <div style="display: flex; flex-direction: column; gap: 12px;">
                     ${items.map((item, i) => `
                         <div style="background: #f8fafc; border-left: 4px solid var(--primary); padding: 15px 18px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                             <div style="display: flex; justify-content: space-between; align-items: start;">
                                 <div style="flex: 1;">
-                                    <div style="font-weight: 600; color: var(--dark); margin-bottom: 8px; font-size: 1.05rem;">
+                                    <div style="font-weight: 600; color: var(--dark); margin-bottom: 6px; font-size: 1.05rem;">
                                         <span style="display: inline-block; background: var(--primary); color: white; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 0.85rem; margin-right: 10px;">${i + 1}</span>
                                         ${item.name}
                                     </div>
+                                    ${(item.qty && item.qty > 1 && item.unit_price) ? `
+                                        <div style="margin-left: 34px; margin-bottom: 5px;">
+                                            <span style="display: inline-flex; align-items: center; gap: 5px; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 3px 10px; border-radius: 20px; border: 1px solid #bae6fd;">
+                                                🔢 ${item.qty} &times; &#8369;${item.unit_price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                            </span>
+                                        </div>
+                                    ` : (item.qty && item.qty > 1) ? `
+                                        <div style="margin-left: 34px; margin-bottom: 5px;">
+                                            <span style="display: inline-flex; align-items: center; gap: 5px; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 3px 10px; border-radius: 20px; border: 1px solid #bae6fd;">
+                                                🔢 Qty: ${item.qty}
+                                            </span>
+                                        </div>
+                                    ` : ''}
                                     ${item.sku ? `
                                         <div style="color: #64748b; font-size: 0.9rem; margin-left: 34px; display: flex; align-items: center; gap: 8px;">
                                             <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1407,8 +1422,13 @@ function displayMetadata(results) {
                                         </div>
                                     ` : ''}
                                 </div>
-                                <div style="font-weight: 700; color: var(--success); font-size: 1.25rem; white-space: nowrap; margin-left: 20px;">
-                                    ₱${item.price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                <div style="text-align: right; margin-left: 20px;">
+                                    <div style="font-weight: 700; color: var(--success); font-size: 1.25rem; white-space: nowrap;">
+                                        ₱${item.price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                    </div>
+                                    ${(item.qty && item.qty > 1) ? `
+                                        <div style="font-size: 0.78rem; color: #94a3b8; white-space: nowrap; margin-top: 2px;">total for ${item.qty} pcs</div>
+                                    ` : ''}
                                 </div>
                             </div>
                         </div>
@@ -1417,7 +1437,7 @@ function displayMetadata(results) {
                 
                 ${items.length > 0 ? `
                     <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 600; font-size: 1.1rem;">Total ${items.length} ${items.length === 1 ? 'Item' : 'Items'}</span>
+                        <span style="font-weight: 600; font-size: 1.1rem;">Total ${totalUnitCount} ${totalUnitCount === 1 ? 'Item' : 'Items'}</span>
                         <span style="font-weight: 700; font-size: 1.3rem;">₱${items.reduce((sum, item) => sum + item.price, 0).toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                     </div>
                 ` : ''}

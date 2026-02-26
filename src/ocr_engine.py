@@ -28,7 +28,7 @@ except ImportError as e:
     logger.info("Install with: pip install paddlepaddle-gpu paddleocr opencv-python")
     raise
 
-# Import text enhancer (make sure text_enhancer.py is in the same directory or in PYTHONPATH)
+# Import text enhancer
 try:
     from text_enhancer import TextEnhancer
     TEXT_ENHANCER_AVAILABLE = True
@@ -36,6 +36,15 @@ except ImportError:
     logger.warning("TextEnhancer not found. Text enhancement will be disabled.")
     logger.warning("To enable: Copy text_enhancer.py to the src/ directory")
     TEXT_ENHANCER_AVAILABLE = False
+
+# Import pattern-based corrector
+try:
+    from pattern_based_corrector import PatternBasedCorrector
+    PATTERN_CORRECTOR_AVAILABLE = True
+except ImportError:
+    logger.warning("PatternBasedCorrector not found. Pattern correction will be disabled.")
+    logger.warning("To enable: Copy pattern_based_corrector.py to the src/ directory")
+    PATTERN_CORRECTOR_AVAILABLE = False
 
 
 class OCREngine:
@@ -53,13 +62,12 @@ class OCREngine:
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize OCR engine with configuration
-        
-        Args:
-            config_path: Path to YAML configuration file
         """
         self.config = self._load_config(config_path)
-        self.ocr = None
+        self.ocr = None           # standard OCR instance
+        self.ocr_small = None     # small-text OCR instance (tighter boxes)
         self.text_enhancer = None
+        self.pattern_corrector = None
         
         # Initialize text enhancer if available
         if TEXT_ENHANCER_AVAILABLE:
@@ -68,7 +76,16 @@ class OCREngine:
         else:
             logger.warning("⚠️  Text Enhancer disabled (module not found)")
         
+        # Initialize pattern corrector if available
+        if PATTERN_CORRECTOR_AVAILABLE:
+            self.pattern_corrector = PatternBasedCorrector()
+            logger.info("✅ Pattern-Based Corrector enabled")
+        else:
+            self.pattern_corrector = None
+            logger.warning("⚠️  Pattern-Based Corrector disabled (module not found)")
+        
         self._initialize_ocr()
+        self._initialize_ocr_small()
         
         logger.info("OCR Engine initialized successfully")
         logger.info(f"GPU enabled: {self.config['ocr']['use_gpu']}")
@@ -158,8 +175,51 @@ class OCREngine:
             logger.error(f"Failed to initialize PaddleOCR: {e}")
             raise
     
+    def _initialize_ocr_small(self):
+        """
+        Initialize a second PaddleOCR instance tuned for small text.
+
+        Key differences from standard instance:
+          det_db_unclip_ratio: 1.2 (vs 1.5)
+            Smaller expansion prevents adjacent small text lines from merging.
+          det_db_thresh: 0.10 (vs 0.15)
+            More sensitive detection for faint/tiny strokes.
+          det_limit_side_len: 4096 (vs 2560)
+            Allow larger input so small text gets more pixels.
+          drop_score: 0.20 (vs 0.30)
+            Accept lower-confidence recognitions (small text is inherently less certain).
+        """
+        try:
+            ocr_config = self.config.get("ocr", {})
+            small_config = self.config.get("ocr_small_text", {})
+
+            init_params = {
+                "use_angle_cls": ocr_config.get("use_angle_cls", True),
+                "lang":          ocr_config.get("lang", "en"),
+                "use_gpu":       ocr_config.get("use_gpu", False),
+                "show_log":      False,
+                # Small-text tuned values
+                "det_db_thresh":       small_config.get("det_db_thresh",       0.10),
+                "det_db_unclip_ratio": small_config.get("det_db_unclip_ratio", 1.2),
+                "det_db_box_thresh":   small_config.get("det_db_box_thresh",   0.4),
+                "det_limit_side_len":  small_config.get("det_limit_side_len",  4096),
+                "det_limit_type":      "max",
+                "drop_score":          small_config.get("drop_score",          0.20),
+                "use_space_char":      True,
+                "use_dilation":        True,
+                "det_db_score_mode":   "slow",
+                "rec_batch_num":       ocr_config.get("rec_batch_num", 6),
+            }
+
+            self.ocr_small = PaddleOCR(**init_params)
+            logger.info("✅ Small-text OCR instance initialized")
+
+        except Exception as e:
+            logger.warning(f"Could not initialize small-text OCR: {e} — will use standard")
+            self.ocr_small = None
+
     def extract_text(
-        self, 
+        self,
         image_path: str,
         return_confidence: bool = True,
         return_positions: bool = False,
@@ -184,61 +244,141 @@ class OCREngine:
         start_time = time.time()
         
         try:
-            # Run OCR
+            # ── First OCR pass (standard settings) ──────────────────────────
             result = self.ocr.ocr(image_path, cls=True)
-            
+
             if not result or not result[0]:
                 logger.warning(f"No text detected in {image_path}")
                 return {
-                    'status': 'no_text_found',
-                    'text': '',  # Empty text when no text found
-                    'lines': [],
-                    'lines_detected': 0,
-                    'average_confidence': 0.0,
-                    'processing_time_ms': int((time.time() - start_time) * 1000)
+                    "status": "no_text_found",
+                    "text": "",
+                    "lines": [],
+                    "lines_detected": 0,
+                    "average_confidence": 0.0,
+                    "processing_time_ms": int((time.time() - start_time) * 1000),
                 }
-            
-            # Parse results
-            lines = self._parse_ocr_result(
-                result[0], 
-                return_confidence, 
-                return_positions
-            )
-            
-            # ⭐ NEW: Apply text enhancement to restore spacing
-            if enhance_text and self.text_enhancer is not None:
-                lines = self.text_enhancer.enhance_lines_with_confidence(lines)
-                logger.info("✨ Text enhancement applied (spacing restored)")
-            
-            # Calculate statistics
-            avg_confidence = np.mean([line['confidence'] for line in lines])
+
+            lines = self._parse_ocr_result(result[0], return_confidence, return_positions)
+
+            # ── Small-text confidence retry ──────────────────────────────────
+            # If average bounding-box height is < 15px, the detector was working
+            # with very small characters.  Re-run with the small-text OCR instance
+            # (lower unclip_ratio, more sensitive threshold, larger input limit)
+            # and keep whichever pass found MORE lines.
+            lines = self._maybe_small_text_retry(image_path, lines,
+                                                 return_confidence, return_positions)
+
+            # ── Pattern-based correction ─────────────────────────────────────
+            if self.pattern_corrector is not None:
+                lines = self.pattern_corrector.correct_lines_with_confidence(lines)
+                logger.info("✨ Pattern-based correction applied")
+
+            avg_confidence = float(np.mean([line["confidence"] for line in lines])) if lines else 0.0
             processing_time = int((time.time() - start_time) * 1000)
-            
-            # Create full text string (concatenate all lines)
-            full_text = "\n".join([line['text'] for line in lines])
-            
-            logger.info(f"Extracted {len(lines)} lines in {processing_time}ms")
-            logger.info(f"Average confidence: {avg_confidence:.2f}")
-            
+            full_text = "\n".join([line["text"] for line in lines])
+
+            logger.info(f"Extracted {len(lines)} lines in {processing_time}ms  "
+                        f"avg_conf={avg_confidence:.2f}")
+
             return {
-                'status': 'success',
-                'text': full_text,  # Full text with enhanced spacing
-                'lines_detected': len(lines),
-                'processing_time_ms': processing_time,
-                'average_confidence': round(float(avg_confidence), 3),
-                'lines': lines,
-                'text_enhanced': enhance_text and self.text_enhancer is not None
+                "status": "success",
+                "text": full_text,
+                "lines_detected": len(lines),
+                "processing_time_ms": processing_time,
+                "average_confidence": round(avg_confidence, 3),
+                "lines": lines,
+                "text_enhanced": enhance_text and self.text_enhancer is not None,
             }
-            
+
         except Exception as e:
             logger.error(f"OCR extraction failed: {e}")
             raise
     
+    def _avg_bbox_height(self, lines: List[Dict]) -> float:
+        """
+        Compute average bounding-box height across all detected lines.
+        PaddleOCR bbox format: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+        Height = max(y) - min(y) per box.
+        Returns 0.0 if no bbox data is available.
+        """
+        heights = []
+        for line in lines:
+            bbox = line.get("bbox")
+            if bbox and len(bbox) == 4:
+                try:
+                    ys = [pt[1] for pt in bbox]
+                    heights.append(max(ys) - min(ys))
+                except (IndexError, TypeError):
+                    pass
+        return float(np.mean(heights)) if heights else 0.0
+
+    def _maybe_small_text_retry(
+        self,
+        image_path: str,
+        first_lines: List[Dict],
+        return_confidence: bool,
+        return_positions: bool,
+    ) -> List[Dict]:
+        """
+        If the first OCR pass produced very small bounding boxes
+        (avg height < 15px), re-run OCR with the small-text instance.
+
+        Why this matters:
+          PaddleOCR's DB detector was trained on text ≥ ~16px tall.
+          Below that, it often misses characters or merges adjacent lines.
+          The small-text instance uses tighter unclip_ratio (1.2) and
+          a more sensitive threshold (0.10) to catch these cases.
+
+        Strategy: run the retry, then keep whichever pass found MORE lines.
+        More lines = more text detected = better result.
+        """
+        SMALL_BBOX_THRESHOLD = 15.0   # pixels
+
+        if self.ocr_small is None:
+            return first_lines
+
+        avg_h = self._avg_bbox_height(first_lines)
+        if avg_h == 0.0 or avg_h >= SMALL_BBOX_THRESHOLD:
+            # Text is large enough — no retry needed
+            return first_lines
+
+        logger.info(
+            f"[OCR] Small text detected (avg bbox height {avg_h:.1f}px < "
+            f"{SMALL_BBOX_THRESHOLD}px) — running small-text retry pass"
+        )
+
+        try:
+            retry_result = self.ocr_small.ocr(image_path, cls=True)
+            if not retry_result or not retry_result[0]:
+                logger.info("[OCR] Small-text retry found nothing — keeping first pass")
+                return first_lines
+
+            retry_lines = self._parse_ocr_result(
+                retry_result[0], return_confidence, return_positions
+            )
+
+            if len(retry_lines) > len(first_lines):
+                logger.info(
+                    f"[OCR] Small-text retry better: {len(retry_lines)} lines "
+                    f"vs {len(first_lines)} — using retry result"
+                )
+                return retry_lines
+            else:
+                logger.info(
+                    f"[OCR] First pass better or equal: {len(first_lines)} lines "
+                    f"vs retry {len(retry_lines)} — keeping first pass"
+                )
+                return first_lines
+
+        except Exception as e:
+            logger.warning(f"[OCR] Small-text retry failed: {e} — keeping first pass")
+            return first_lines
+
     def _parse_ocr_result(
-        self, 
+        self,
         result: List,
         return_confidence: bool,
-        return_positions: bool
+        return_positions: bool,
     ) -> List[Dict]:
         """Parse PaddleOCR result into structured format"""
         lines = []

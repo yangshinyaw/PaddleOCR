@@ -224,32 +224,28 @@ async def scan_with_metadata(
             file_path.unlink()
 
 
-@router.post("/ocr/scan-multiple", response_model=OCRResponse, tags=["OCR"])
+@router.post("/ocr/scan-multiple", response_model=MetadataResponse, tags=["OCR"])
 async def scan_multiple(
     files: List[UploadFile] = File(..., description="Multiple receipt images"),
     stitch: bool = Form(True, description="Stitch images together"),
     preprocess: bool = Form(True, description="Apply preprocessing")
 ):
     """
-    **Scan multiple receipt images (for split receipts)**
-    
+    **Scan multiple receipt images (for split receipts) — WITH metadata**
+
     Upload multiple images of the same receipt and combine them.
-    
+    Returns full metadata (store name, invoice, date, items) just like
+    the single-image scan-with-metadata endpoint.
+
     **Parameters:**
     - `files`: List of receipt images (2-10 images)
     - `stitch`: Stitch images together (default: True)
     - `preprocess`: Apply preprocessing (default: True)
-    
+
     **Returns:**
     - Combined extracted text
+    - Metadata: store name, invoice #, date, items with SKU & price
     - Stitching method used
-    
-    **Example:**
-    ```bash
-    curl -X POST http://localhost:8000/api/v1/ocr/scan-multiple \\
-      -F "files=@receipt_part1.jpg" \\
-      -F "files=@receipt_part2.jpg"
-    ```
     """
     file_paths = []
     try:
@@ -258,28 +254,49 @@ async def scan_multiple(
             raise HTTPException(400, "Upload at least 2 images")
         if len(files) > 10:
             raise HTTPException(400, "Maximum 10 images")
-        
+
         for file in files:
             validate_file(file)
-        
+
         # Save all files
         for file in files:
             file_path = save_upload(file)
             file_paths.append(str(file_path))
-        
-        logger.info(f"Processing {len(files)} images")
-        
-        # Process
+
+        logger.info(f"Processing {len(files)} images with metadata")
+
+        # Process with metadata extraction ENABLED
         result = processor.process_multiple_images(
             file_paths,
             stitch=stitch,
             preprocess=preprocess,
-            extract_metadata=False
+            extract_metadata=True   # ← FIXED: was hardcoded False
         )
-        
-        return OCRResponse(
+
+        # Build metadata response (same structure as scan-with-metadata)
+        extracted_metadata = result.get('metadata', {})
+        metadata_response = {
+            'store_name':     extracted_metadata.get('store_name'),
+            'invoice_number': extracted_metadata.get('invoice_number'),
+            'date':           extracted_metadata.get('date'),
+            'time':           extracted_metadata.get('time'),
+            'total_amount':   extracted_metadata.get('total_amount'),
+            'vat_amount':     extracted_metadata.get('vat_amount'),
+            'tin':            extracted_metadata.get('tin'),
+            'item_count':     extracted_metadata.get('item_count', 0),
+            'has_vat':        extracted_metadata.get('has_vat', False),
+            'items':          extracted_metadata.get('items', []),
+        }
+
+        logger.info(
+            f"✅ Multi-image metadata: Store={metadata_response['store_name']}, "
+            f"Invoice={metadata_response['invoice_number']}, "
+            f"Items={metadata_response['item_count']}"
+        )
+
+        return MetadataResponse(
             status="success",
-            filename=f"{len(files)} images",
+            filename=f"{len(files)} images (stitched)",
             text=result.get('text', ''),
             formatted_text=result.get('formatted_text'),
             confidence=result.get('average_confidence', 0),
@@ -294,17 +311,17 @@ async def scan_multiple(
                 for line in result.get('lines', [])
             ],
             rows=result.get('rows'),
+            metadata=metadata_response,
             processing_time_ms=result.get('processing_time_ms', 0),
-            stitching_method=result.get('stitching_method')
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error: {e}")
+        logger.exception("Full traceback:")
         raise HTTPException(500, str(e))
     finally:
-        # Cleanup all files
         for path in file_paths:
             Path(path).unlink(missing_ok=True)
 

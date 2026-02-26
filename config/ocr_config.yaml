@@ -1,96 +1,109 @@
-# OCR Configuration - OPTIMIZED FOR COMPLETE LINE EXTRACTION
-# Version: 2.0 - Improved Detection
-# Focus: Capture ALL lines, even low-contrast/small text
-# Changes: Lower thresholds, higher resolution, better detection
+# OCR Configuration - Smart Adaptive Mode
+# Version: 3.0
+#
+# PHILOSOPHY: Let PaddleOCR do what it's built for.
+# Our preprocessing only fixes what PaddleOCR cannot fix itself.
 
 ocr:
-  # Core settings
   use_gpu: false
   use_angle_cls: true
   lang: 'en'
-  
-  # ⭐ IMPROVED DETECTION SETTINGS
-  # Lower threshold = detects more subtle/faint text
-  det_db_thresh: 0.15           # CHANGED from 0.2 → 0.15 (more sensitive)
-  det_db_box_thresh: 0.5        # Keep same
-  det_db_unclip_ratio: 1.2      # CHANGED from 1.6 → 1.2 (smaller boxes, less merging)
-  
-  # ⭐ IMPROVED RECOGNITION SETTINGS
-  # Lower drop_score = accepts lower confidence lines
-  rec_batch_num: 6
-  drop_score: 0.25              # CHANGED from 0.4 → 0.25 (keeps more text)
-  use_space_char: true
-  
-  # ⭐ IMPROVED RESOLUTION FOR SMALL TEXT
-  # Higher resolution = better detection of small/thin text (MTN, barcodes, etc.)
-  det_limit_side_len: 2560      # CHANGED from 1920 → 2560 (33% higher resolution)
-  det_limit_type: 'max'
-  
-  # ⭐ IMPROVED DETECTION MODE
-  # Slower but more thorough detection
-  use_dilation: true
-  det_db_score_mode: 'slow'     # CHANGED from 'fast' → 'slow' (more accurate)
 
-# Preprocessing settings
+  # Detection thresholds
+  # 0.15 is good for faint/low-quality receipts
+  # Do NOT go below 0.1 — you'll get too many false detections
+  det_db_thresh: 0.15
+  det_db_box_thresh: 0.5
+
+  # Unclip ratio: controls how much each detected text box is expanded
+  # 1.5 is a balanced value — 1.2 cuts off edges, 2.0+ merges separate words
+  det_db_unclip_ratio: 1.5
+
+  # Recognition
+  rec_batch_num: 6
+  # drop_score: minimum confidence to keep a recognized text line
+  # 0.3 is a good balance — lower values add noise, higher values miss faint text
+  drop_score: 0.3
+  use_space_char: true
+
+  # Resolution: 2560px max side is enough for any real receipt photo
+  # Going higher (3000+) adds processing time with little accuracy gain
+  det_limit_side_len: 2560
+  det_limit_type: 'max'
+
+  # use_dilation: expands text regions slightly before detection
+  # Helps catch thin/faint text strokes — leave on
+  use_dilation: true
+
+  # det_db_score_mode: 'slow' is more accurate for dense text like receipts
+  det_db_score_mode: 'slow'
+
+# Preprocessing — smart adaptive, per-condition targeting
 preprocessing:
-  auto_rotate: true
-  rotation_threshold: 10.0
-  
-  # ⭐ ENABLE ADAPTIVE ENHANCEMENT
-  # Better for low-contrast thermal receipts
-  enhance_contrast: true          # CHANGED from false → true
-  adaptive_threshold: true        # NEW: Use adaptive thresholding
-  clahe_enabled: true            # NEW: Contrast Limited Adaptive Histogram Equalization
-  
-  # Keep these OFF by default for speed
-  sharpen: false
-  denoise: false
-  
+  # AUTO MODE: ImagePreprocessor v3 analyzes each image and only applies
+  # what is actually needed. Set enhance_contrast: false so preprocess()
+  # routes to the new smart path, not the old CLAHE-always path.
+  enhance_contrast: false    # ← IMPORTANT: keep false, v3 handles this internally
+
+  # These are thresholds used by ImagePreprocessor v3 analysis
+  # (matching the constants in image_preprocessor.py)
+  dark_mean_threshold: 80       # below → apply gamma correction
+  very_dark_mean_threshold: 50  # below → apply stronger gamma
+  low_contrast_threshold: 35    # std below → apply gentle CLAHE
+  shadow_variance_threshold: 900
+
+  # Deskew
+  deskew_enabled: true
+  skew_min_angle: 1.5           # degrees, below → skip deskew (avoid unnecessary rotation)
+
   # Size limits
   max_image_size: 4096
-  min_image_size: 100
+  min_image_size: 600
+  target_resize: 2560
 
-# Metadata extraction patterns
-metadata:
-  total_patterns:
-    - 'TOTAL\\s*:?\\s*([\\d,]+\\.\\d{2})'
-    - 'AMOUNT\\s+DUE\\s*:?\\s*([\\d,]+\\.\\d{2})'
-    - 'GRAND\\s+TOTAL\\s*:?\\s*([\\d,]+\\.\\d{2})'
-    - 'TOTAL\\s+PAYMENT\\s*:?\\s*([\\d,]+\\.\\d{2})'
-    - 'TOTAL\\s+AMOUNT\\s*:?\\s*([\\d,]+\\.\\d{2})'
-  
-  date_patterns:
-    - '(\\d{2}/\\d{2}/\\d{4})'
-    - '(\\d{4}-\\d{2}-\\d{2})'
-    - '(\\d{2}-\\d{2}-\\d{4})'
-    - '(\\d{2}-\\d{2}-\\d{2})'
-  
-  merchant_lines: 3
-
-# Text enhancement settings (for post-processing)
+# Text enhancement (post-OCR spacing and character fixes)
 text_enhancement:
   enabled: true
   restore_spacing: true
   restore_special_chars: true
   patterns:
-    # Phone numbers: restore spacing
     phone: true
-    # TIN numbers: preserve dashes
     tin: true
-    # VAT formatting
     vat: true
-    # Item counts: add space
     items: true
 
-# Performance settings
+# Small-text OCR instance (used for confidence retry when avg bbox height < 15px)
+# These params differ from the standard [ocr] section intentionally:
+#   - Lower det_db_thresh (0.10 vs 0.15): more sensitive for faint thin strokes
+#   - Lower det_db_unclip_ratio (1.2 vs 1.5): tighter boxes prevent line merging
+#   - Lower det_db_box_thresh (0.4 vs 0.5): keep more borderline detections
+#   - Higher det_limit_side_len (4096 vs 2560): more pixels = more detail
+#   - Lower drop_score (0.20 vs 0.30): accept less-certain small text recognitions
+ocr_small_text:
+  det_db_thresh: 0.10
+  det_db_unclip_ratio: 1.2
+  det_db_box_thresh: 0.4
+  det_limit_side_len: 4096
+  drop_score: 0.20
+
+# Small text preprocessor thresholds (used by ImagePreprocessor v3)
+small_text:
+  # If estimated text height is below this, upscale the image before OCR
+  upscale_threshold_px: 20
+  # Target longest side when upscaling for small text
+  upscale_target_side: 2400
+  # OCR confidence retry threshold (avg bbox height in pixels)
+  retry_bbox_threshold_px: 15
+
+# Performance
 performance:
-  # Use multithreading for batch processing
-  use_multiprocessing: false  # Set to true if processing many receipts
+  use_multiprocessing: false
   max_workers: 4
-  
-  # Cache preprocessed images
   cache_preprocessed: false
-  
-  # Logging
   log_level: 'INFO'
-  save_debug_images: false  # Set to true for troubleshooting
+  save_debug_images: false    # Set true temporarily when debugging quality issues
+
+# Metadata extraction (used by GeneralMetadataExtractor v2)
+metadata:
+  # These are informational only — actual patterns are in general_metadata_extractor.py
+  merchant_lines: 3

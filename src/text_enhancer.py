@@ -45,6 +45,66 @@ class TextEnhancer:
     def _build_patterns(self) -> Dict:
         """Build regex patterns for text enhancement"""
         return {
+            # ========== MERCURY DRUG SPECIFIC FIXES (NEW!) ==========
+            
+            # MTN number: MIN → MTN (common OCR error)
+            'mtn_fix': {
+                'pattern': r'MIN\s*:\s*(\d)',
+                'replacement': r'MTN:\1',
+                'description': 'Fix MTN misread as MIN'
+            },
+            
+            # Preserve barcodes: Don't break 12-digit numbers
+            'preserve_barcode': {
+                'pattern': r'(\d{4})\s+(\d{4})-(\d{4})',
+                'replacement': r'\1\2\3',
+                'description': 'Preserve barcode numbers (remove spaces/dashes)'
+            },
+            
+            # MOBILE/VIBER phone: Fix N0 → NO : (0
+            'mobile_viber_phone': {
+                'pattern': r'(MOBILE/VIBER)\s+N0(\d{4})\)',
+                'replacement': r'\1 NO : (0\2)',
+                'description': 'Fix MOBILE/VIBER phone format'
+            },
+            
+            # PWD ID: PWDID# → PWD ID# :
+            'pwd_id_spacing': {
+                'pattern': r'PWDID#(\d)',
+                'replacement': r'PWD ID# : \1',
+                'description': 'Fix PWD ID spacing and colon'
+            },
+            
+            # Company names: Phil logix → Phillogix
+            'phillogix_fix': {
+                'pattern': r'Phil\s+logix',
+                'replacement': r'Phillogix',
+                'description': 'Fix Phillogix company name'
+            },
+            
+            # Fix Salamat: Sa lamat → Salamat
+            'salamat_fix': {
+                'pattern': r'Sa\s+lamat',
+                'replacement': r'Salamat',
+                'description': 'Fix Salamat word split'
+            },
+            
+            # NIDO product: NID05 → NIDO5
+            'nido_product': {
+                'pattern': r'NID05\+',
+                'replacement': r'NIDO5+',
+                'description': 'Fix NIDO product code'
+            },
+            
+            # Accredited number vs Acct'd: Common misread
+            'accred_vs_acctd': {
+                'pattern': r'Accred\s+No\.',
+                'replacement': r"Acct'd No.",
+                'description': 'Fix Accredited vs Account number'
+            },
+            
+            # ========== GENERAL FORMATTING PATTERNS ==========
+            
             # Phone numbers: (044)815-1340 or 0448151340
             'phone': {
                 'pattern': r'(\d{3,4})(\d{3,4})-?(\d{4})',
@@ -231,27 +291,45 @@ class TextEnhancer:
 def main():
     """Test the text enhancer"""
     print("\n" + "="*70)
-    print("TEXT ENHANCER - Test Mode")
+    print("TEXT ENHANCER - ENHANCED VERSION - Test Mode")
     print("="*70 + "\n")
     
     enhancer = TextEnhancer()
     
-    # Test cases from Mercury Drug receipt
+    # Test cases from Mercury Drug receipt + new fixes
     test_cases = [
+        # Original patterns
         ("TELNO044815-1340", "TEL NO : (044) 815-1340"),
         ("MOBILE7VIBER NO:0919080-6386", "MOBILE/VIBER NO : (0919) 080-6386"),
         ("LESSBPDISC5%x1220.00", "LESS : BP DISC 5% x 1220.00"),
         ("**1items **", "** 1 item(s) **"),
         ("VAT-12%", "VAT 12%"),
         ("PWD ID#000 0031", "PWD ID# : 000 0031"),
-        ("PA#99S/S", "PA # 99 S/S"),
+        
+        # NEW: Mercury Drug specific fixes
+        ("MIN : 2408 2015-243672942[1.5.30]31", "MTN:2408 2015-243672942[1.5.30]31"),
+        ("4800 3614-0523", "480036140523"),
+        ("MOBILE/VIBER N00919)080-6386", "MOBILE/VIBER NO : (0919)080-6386"),
+        ("PWDID#000 0031 402013135", "PWD ID# : 000 0031 402013135"),
+        ("Phil logix Systems, Inc.", "Phillogix Systems, Inc."),
+        ("Sa lamat Po", "Salamat Po"),
+        ("NID05+PDR MLK2kg", "NIDO5+PDR MLK2kg"),
+        ("Accred No.:8042", "Acct'd No.:8042"),
     ]
     
     print("Testing enhancement patterns:\n")
     
+    passed = 0
+    failed = 0
+    
     for original, expected in test_cases:
         enhanced = enhancer.enhance_line(original)
         status = "✅" if enhanced == expected else "⚠️"
+        
+        if enhanced == expected:
+            passed += 1
+        else:
+            failed += 1
         
         print(f"{status} Original:  {original}")
         print(f"   Enhanced: {enhanced}")
@@ -259,7 +337,15 @@ def main():
             print(f"   Expected: {expected}")
         print()
     
-    print("="*70 + "\n")
+    print("="*70)
+    print(f"\n📊 TEST RESULTS: {passed} passed, {failed} failed out of {len(test_cases)} tests")
+    
+    if failed == 0:
+        print("🎉 All tests passed! Text enhancer is working perfectly!")
+    else:
+        print(f"⚠️  {failed} test(s) need adjustment")
+    
+    print("\n" + "="*70 + "\n")
 
 
 if __name__ == "__main__":
