@@ -134,7 +134,8 @@ async def scan_receipt(
 @router.post("/ocr/scan-with-metadata", response_model=MetadataResponse, tags=["OCR"])
 async def scan_with_metadata(
     file: UploadFile = File(..., description="Receipt image"),
-    preprocess: bool = Form(True, description="Apply preprocessing")
+    preprocess: bool = Form(True, description="Apply preprocessing"),
+    fix_rotation: bool = Form(False, description="Detect and correct sideways/upside-down images")
 ):
     """
     **Scan receipt and extract metadata**
@@ -168,7 +169,8 @@ async def scan_with_metadata(
         result = processor.process_single_image(
             str(file_path),
             preprocess=preprocess,
-            extract_metadata=True  # This triggers GeneralMetadataExtractor
+            extract_metadata=True,  # This triggers GeneralMetadataExtractor
+            fix_rotation=fix_rotation
         )
         
         # Extract the metadata dict (created by GeneralMetadataExtractor)
@@ -185,7 +187,8 @@ async def scan_with_metadata(
             'tin': extracted_metadata.get('tin'),
             'item_count': extracted_metadata.get('item_count', 0),
             'has_vat': extracted_metadata.get('has_vat', False),
-            'items': extracted_metadata.get('items', [])
+            'items': extracted_metadata.get('items', []),
+            'rotation_applied': extracted_metadata.get('rotation_applied', 0),
         }
         
         logger.info(f"✅ Metadata extracted: Store={metadata_response['store_name']}, "
@@ -228,7 +231,8 @@ async def scan_with_metadata(
 async def scan_multiple(
     files: List[UploadFile] = File(..., description="Multiple receipt images"),
     stitch: bool = Form(True, description="Stitch images together"),
-    preprocess: bool = Form(True, description="Apply preprocessing")
+    preprocess: bool = Form(True, description="Apply preprocessing"),
+    fix_rotation: bool = Form(False, description="Detect and correct sideways/upside-down images")
 ):
     """
     **Scan multiple receipt images (for split receipts) — WITH metadata**
@@ -270,7 +274,8 @@ async def scan_multiple(
             file_paths,
             stitch=stitch,
             preprocess=preprocess,
-            extract_metadata=True   # ← FIXED: was hardcoded False
+            extract_metadata=True,   # ← FIXED: was hardcoded False
+            fix_rotation=fix_rotation
         )
 
         # Build metadata response (same structure as scan-with-metadata)
@@ -286,6 +291,7 @@ async def scan_multiple(
             'item_count':     extracted_metadata.get('item_count', 0),
             'has_vat':        extracted_metadata.get('has_vat', False),
             'items':          extracted_metadata.get('items', []),
+            'rotation_applied': extracted_metadata.get('rotation_applied', 0),
         }
 
         logger.info(

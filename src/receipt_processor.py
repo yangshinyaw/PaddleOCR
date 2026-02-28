@@ -25,14 +25,21 @@ from utils import (
     setup_logging
 )
 
-# Rich metadata extractor — handles Mercury Drug, SM, and all PH stores
+# Smart metadata extractor — handles Mercury Drug, SM, and all PH stores
 try:
     from general_metadata_extractor import GeneralMetadataExtractor as _GME
     _metadata_extractor = _GME()
-    logger.info("GeneralMetadataExtractor loaded ✅")
-except ImportError:
+    logger.info("GeneralMetadataExtractor loaded OK")
+except Exception:
     _metadata_extractor = None
-    logger.warning("GeneralMetadataExtractor not found — falling back to utils.extract_receipt_metadata")
+
+# Rotation corrector — only used when fix_rotation=True (opt-in, zero cost when off)
+try:
+    from image_rotation_corrector import ImageRotationCorrector as _IRC
+    logger.info("ImageRotationCorrector loaded OK")
+except Exception as _rot_err:
+    logger.warning(f"ImageRotationCorrector not available: {_rot_err}")
+    _IRC = None
 
 
 class ReceiptProcessor:
@@ -58,28 +65,36 @@ class ReceiptProcessor:
         # Create temp directory
         self.temp_dir = Path("data/temp")
         ensure_directory(str(self.temp_dir))
-        
+
+        # Rotation corrector — shares the OCR engine for Pass 2 spatial analysis
+        self.rotation_corrector = None
+        if _IRC is not None:
+            self.rotation_corrector = _IRC(ocr_engine=self.ocr_engine)
+
         logger.success("Receipt Processor ready")
     
     def process_single_image(
         self,
         image_path: str,
         preprocess: bool = True,
-        extract_metadata: bool = False
+        extract_metadata: bool = False,
+        fix_rotation: bool = False
     ) -> Dict:
         """
-        Process a single receipt image
-        
+        Process a single receipt image.
+
         Args:
-            image_path: Path to receipt image
-            preprocess: Apply preprocessing pipeline
-            extract_metadata: Extract structured data (merchant, total, etc.)
-        
+            image_path:       Path to receipt image
+            preprocess:       Apply preprocessing pipeline
+            extract_metadata: Extract structured data (merchant, total, items, etc.)
+            fix_rotation:     Detect and correct 90°/180°/270° rotations (~200ms).
+                              Default False — zero cost when disabled.
+
         Returns:
             Processing result dictionary
         """
         logger.info(f"Processing single image: {image_path}")
-        
+
         # Validate
         is_valid, msg = validate_image_file(image_path)
         if not is_valid:
@@ -88,48 +103,122 @@ class ReceiptProcessor:
                 'error': f"Invalid image: {msg}",
                 'image_path': image_path
             }
-        
-        # Preprocess if requested
-        if preprocess:
-            logger.info("Applying preprocessing...")
-            image_path = self.preprocessor.preprocess(image_path)
-        
-        # Extract text
-        logger.info("Extracting text with OCR...")
-        result = self.ocr_engine.extract_text(
-            image_path,
-            return_confidence=True,
-            return_positions=True
-        )
-        
-        # Extract metadata if requested
-        if extract_metadata and result.get('status') == 'success':
-            text_lines = [line['text'] for line in result['lines']]
-            if _metadata_extractor is not None:
-                metadata = _metadata_extractor.extract(text_lines)
-            else:
-                metadata = extract_receipt_metadata(text_lines)
-            result['metadata'] = metadata
-        
-        result['image_path'] = image_path
-        return result
+
+        rotation_degrees = 0
+        rotation_temp    = None  # track temp file for cleanup
+
+        try:
+            working_path = image_path
+
+            # ── Step 0: Rotation correction (opt-in, runs BEFORE preprocess) ─
+            if fix_rotation and self.rotation_corrector is not None:
+                logger.info("[Rotation] Checking orientation...")
+                corrected_path, rotation_degrees = \
+                    self.rotation_corrector.detect_and_correct(working_path)
+                if rotation_degrees != 0:
+                    working_path  = corrected_path
+                    rotation_temp = corrected_path  # remember for cleanup
+                    logger.info(f"[Rotation] Pass1/2 applied {rotation_degrees}°")
+
+            # ── Step 1: Preprocess ────────────────────────────────────────────
+            if preprocess:
+                logger.info("Applying preprocessing...")
+                working_path = self.preprocessor.preprocess(working_path)
+
+            # ── Step 2: OCR ───────────────────────────────────────────────────
+            logger.info("Extracting text with OCR...")
+            result = self.ocr_engine.extract_text(
+                working_path,
+                return_confidence=True,
+                return_positions=True
+            )
+
+            # ── Step 3: Metadata + Pass 3 rotation check ─────────────────────
+            if extract_metadata and result.get('status') == 'success':
+                text_lines = [line['text'] for line in result['lines']]
+
+                # Pass 3: post-OCR line-order check for upside-down
+                # Only run if fix_rotation enabled and Pass 1/2 found nothing
+                if fix_rotation and rotation_degrees == 0 and \
+                        self.rotation_corrector is not None:
+                    text_rot = self.rotation_corrector.check_text_orientation(
+                        text_lines
+                    )
+                    if text_rot != 0:
+                        logger.info(
+                            f"[Rotation] Pass3 detected {text_rot}° — re-running OCR"
+                        )
+                        import cv2 as _cv2
+                        # Re-read the preprocessed (or original) image and rotate
+                        src = _cv2.imread(working_path)
+                        rotated = _cv2.rotate(src, {
+                            90:  _cv2.ROTATE_90_CLOCKWISE,
+                            180: _cv2.ROTATE_180,
+                            270: _cv2.ROTATE_90_COUNTERCLOCKWISE,
+                        }[text_rot])
+                        import tempfile as _tf, os as _os
+                        fd, rerun_path = _tf.mkstemp(suffix=".jpg")
+                        _os.close(fd)
+                        try:
+                            _cv2.imwrite(rerun_path, rotated)
+                            result2 = self.ocr_engine.extract_text(
+                                rerun_path,
+                                return_confidence=True,
+                                return_positions=True
+                            )
+                            if result2.get("status") == "success":
+                                result       = result2
+                                text_lines   = [l['text'] for l in result['lines']]
+                                rotation_degrees = text_rot
+                                logger.info(
+                                    f"[Rotation] Pass3 re-run OK, "
+                                    f"{len(text_lines)} lines"
+                                )
+                        finally:
+                            try:
+                                Path(rerun_path).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+
+                # Extract metadata
+                if _metadata_extractor is not None:
+                    metadata = _metadata_extractor.extract(text_lines)
+                else:
+                    metadata = extract_receipt_metadata(text_lines)
+
+                metadata['rotation_applied'] = rotation_degrees
+                result['metadata'] = metadata
+
+            result['image_path']      = image_path
+            result['rotation_applied'] = rotation_degrees
+            return result
+
+        finally:
+            # Clean up rotation temp file (created by detect_and_correct)
+            if rotation_temp and rotation_temp != image_path:
+                try:
+                    Path(rotation_temp).unlink(missing_ok=True)
+                except Exception:
+                    pass
     
     def process_multiple_images(
         self,
         image_paths: List[str],
         stitch: bool = True,
         preprocess: bool = True,
-        extract_metadata: bool = False
+        extract_metadata: bool = False,
+        fix_rotation: bool = False
     ) -> Dict:
         """
-        Process multiple receipt images (long receipt parts)
-        
+        Process multiple receipt images (long receipt parts).
+
         Args:
-            image_paths: List of image paths (in order)
-            stitch: Stitch images together first
-            preprocess: Apply preprocessing
+            image_paths:      List of image paths (in order)
+            stitch:           Stitch images together first
+            preprocess:       Apply preprocessing
             extract_metadata: Extract structured data
-        
+            fix_rotation:     Detect and correct rotations per image
+
         Returns:
             Processing result dictionary
         """
@@ -143,7 +232,23 @@ class ReceiptProcessor:
                     'status': 'error',
                     'error': f"Invalid image {path}: {msg}"
                 }
-        
+
+        rotation_temps = []
+
+        # Step 0: Rotation correction per image (opt-in, runs BEFORE preprocess)
+        if fix_rotation and self.rotation_corrector is not None:
+            logger.info("[Rotation] Checking orientation of all images...")
+            corrected_paths = []
+            for path in image_paths:
+                corrected, deg = self.rotation_corrector.detect_and_correct(path)
+                corrected_paths.append(corrected)
+                if deg != 0:
+                    rotation_temps.append(corrected)
+                    logger.info(
+                        f"[Rotation] {Path(path).name}: {deg}° corrected"
+                    )
+            image_paths = corrected_paths
+
         # Preprocess if requested
         if preprocess:
             logger.info("Preprocessing all images...")
@@ -197,8 +302,17 @@ class ReceiptProcessor:
                 metadata = _metadata_extractor.extract(text_lines)
             else:
                 metadata = extract_receipt_metadata(text_lines)
+            # rotation_applied=0 here: per-image corrections already happened above
+            metadata['rotation_applied'] = 0
             result['metadata'] = metadata
-        
+
+        # Clean up rotation temp files
+        for tmp in rotation_temps:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
         return result
     
     def process_directory(

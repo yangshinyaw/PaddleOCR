@@ -8,6 +8,7 @@ let detectedCorners = null;
 
 // Multi-image state
 let multiImageMode = false;
+let fixRotation = false;
 let capturedImages = [];
 let currentImageIndex = 0;
 
@@ -53,6 +54,34 @@ function updateUploadMethodText(isMultiMode) {
         } else {
             uploadText.textContent = 'Choose from your device';
         }
+    }
+}
+
+/**
+ * Toggle fix-rotation mode on/off
+ */
+function toggleFixRotation() {
+    const toggle = document.getElementById('fixRotationToggle');
+    fixRotation = toggle.checked;
+    console.log('🔄 Fix rotation:', fixRotation ? 'ON' : 'OFF');
+    const badge = document.getElementById('rotationBadge');
+    if (badge) { badge.className = 'rotation-badge'; badge.textContent = ''; }
+}
+
+/**
+ * Show rotation result badge after processing
+ */
+function showRotationBadge(rotationApplied) {
+    const badge = document.getElementById('rotationBadge');
+    if (!badge || !fixRotation) return;
+    if (rotationApplied && rotationApplied !== 0) {
+        const labels = { 90: '90° clockwise', 180: 'upside-down (180°)', 270: '270° clockwise' };
+        const label = labels[rotationApplied] || `${rotationApplied}°`;
+        badge.className = 'rotation-badge corrected';
+        badge.innerHTML = `✅ Image was ${label} — corrected automatically`;
+    } else {
+        badge.className = 'rotation-badge no-correction';
+        badge.innerHTML = `✓ No rotation correction needed`;
     }
 }
 
@@ -1067,6 +1096,7 @@ async function handleMultipleFileUpload(files, event) {  // FIXED: Accept event 
         
         // Enable stitching
         formData.append('stitch', 'true');
+        formData.append('fix_rotation', fixRotation ? 'true' : 'false');
         
         console.log('📤 Sending multiple files to API for stitching...');
         
@@ -1158,6 +1188,7 @@ async function processMultipleImages() {
         
         // Enable stitching
         formData.append('stitch', 'true');
+        formData.append('fix_rotation', fixRotation ? 'true' : 'false');
         
         console.log('📤 Sending multiple images to API for stitching...');
         
@@ -1238,6 +1269,7 @@ async function processReceipt() {
     try {
         const formData = new FormData();
         formData.append('file', currentFile);
+        formData.append('fix_rotation', fixRotation ? 'true' : 'false');
 
         console.log('📤 Sending request to API...');
         console.log('File:', currentFile.name, 'Size:', currentFile.size);
@@ -1265,6 +1297,7 @@ async function processReceipt() {
         
         currentResults = results;
         displayResults(results);
+        showRotationBadge(results.metadata?.rotation_applied);
 
     } catch (error) {
         console.error('💥 Error processing receipt:', error);
@@ -1349,10 +1382,18 @@ function displayMetadata(results) {
     const invoiceNumber = metadata.invoice_number || 'Not detected';
     const date = metadata.date || 'Not detected';
     const items = metadata.items || [];
-    // item_count = sum of all qty values (e.g. 35 yakult + 1 nido = 36)
     const totalUnitCount = metadata.item_count || items.reduce((s, i) => s + (i.qty || 1), 0);
+    // Use receipt's actual total_amount (discount-adjusted by extractor).
+    // Fall back to item sum only when no total was detected — avoids showing
+    // pre-discount subtotal on receipts with BP/Senior/PWD discounts.
+    const extractedTotal = metadata.total_amount
+        ? parseFloat(metadata.total_amount.replace(/[\u20B1,]/g, ''))
+        : null;
+    const displayTotal = (extractedTotal && extractedTotal > 0)
+        ? extractedTotal
+        : items.reduce((sum, item) => sum + item.price, 0);
 
-    console.log('🔍 Displaying metadata:', { storeName, invoiceNumber, date, itemCount: items.length });
+    console.log('🔍 Displaying metadata:', { storeName, invoiceNumber, date, unitCount: totalUnitCount, lines: items.length });
 
     // Build HTML - 2x2 Grid showing only: Store Name, Invoice #, Date, Items
     let html = `
@@ -1396,19 +1437,19 @@ function displayMetadata(results) {
                         <div style="background: #f8fafc; border-left: 4px solid var(--primary); padding: 15px 18px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                             <div style="display: flex; justify-content: space-between; align-items: start;">
                                 <div style="flex: 1;">
-                                    <div style="font-weight: 600; color: var(--dark); margin-bottom: 6px; font-size: 1.05rem;">
+                                    <div style="font-weight: 600; color: var(--dark); margin-bottom: 8px; font-size: 1.05rem;">
                                         <span style="display: inline-block; background: var(--primary); color: white; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 0.85rem; margin-right: 10px;">${i + 1}</span>
                                         ${item.name}
                                     </div>
                                     ${(item.qty && item.qty > 1 && item.unit_price) ? `
                                         <div style="margin-left: 34px; margin-bottom: 5px;">
-                                            <span style="display: inline-flex; align-items: center; gap: 5px; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 3px 10px; border-radius: 20px; border: 1px solid #bae6fd;">
-                                                🔢 ${item.qty} &times; &#8369;${item.unit_price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                            <span style="background:#dbeafe;color:#1d4ed8;font-size:0.82rem;font-weight:700;padding:2px 10px;border-radius:20px;border:1px solid #93c5fd;display:inline-flex;align-items:center;gap:4px;">
+                                                🔢 ${item.qty} &times; &#8369;${item.unit_price.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}
                                             </span>
                                         </div>
                                     ` : (item.qty && item.qty > 1) ? `
                                         <div style="margin-left: 34px; margin-bottom: 5px;">
-                                            <span style="display: inline-flex; align-items: center; gap: 5px; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 3px 10px; border-radius: 20px; border: 1px solid #bae6fd;">
+                                            <span style="background:#dbeafe;color:#1d4ed8;font-size:0.82rem;font-weight:700;padding:2px 10px;border-radius:20px;border:1px solid #93c5fd;display:inline-flex;align-items:center;gap:4px;">
                                                 🔢 Qty: ${item.qty}
                                             </span>
                                         </div>
@@ -1422,13 +1463,11 @@ function displayMetadata(results) {
                                         </div>
                                     ` : ''}
                                 </div>
-                                <div style="text-align: right; margin-left: 20px;">
+                                <div style="text-align:right; margin-left: 20px;">
                                     <div style="font-weight: 700; color: var(--success); font-size: 1.25rem; white-space: nowrap;">
                                         ₱${item.price.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                                     </div>
-                                    ${(item.qty && item.qty > 1) ? `
-                                        <div style="font-size: 0.78rem; color: #94a3b8; white-space: nowrap; margin-top: 2px;">total for ${item.qty} pcs</div>
-                                    ` : ''}
+                                    ${(item.qty && item.qty > 1) ? `<div style="font-size:0.75rem;color:#94a3b8;margin-top:2px;white-space:nowrap;">total for ${item.qty} pcs</div>` : ''}
                                 </div>
                             </div>
                         </div>
@@ -1438,7 +1477,7 @@ function displayMetadata(results) {
                 ${items.length > 0 ? `
                     <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
                         <span style="font-weight: 600; font-size: 1.1rem;">Total ${totalUnitCount} ${totalUnitCount === 1 ? 'Item' : 'Items'}</span>
-                        <span style="font-weight: 700; font-size: 1.3rem;">₱${items.reduce((sum, item) => sum + item.price, 0).toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                        <span style="font-weight: 700; font-size: 1.3rem;">₱${displayTotal.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                     </div>
                 ` : ''}
             </div>
@@ -1565,6 +1604,10 @@ function reset() {
     currentResults = null;
     currentTab = 'raw';  // CHANGED: Reset to 'raw' instead of 'formatted'
     
+    // Clear rotation badge
+    const rotBadge = document.getElementById('rotationBadge');
+    if (rotBadge) { rotBadge.className = 'rotation-badge'; rotBadge.textContent = ''; }
+
     // Clear multi-image state
     if (capturedImages.length > 0) {
         clearCapturedImages();
